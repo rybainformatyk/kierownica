@@ -64,17 +64,19 @@ w [panel/README.md](panel/README.md).
 
 ## Licencja
 
-Projekt jest na licencji [MIT](LICENSE): możesz go używać, zmieniać i
-rozpowszechniać, także komercyjnie, pod warunkiem zachowania informacji
-o autorze i treści licencji.
+Projekt jest na licencji [GNU GPL v3](LICENSE). Możesz go używać, zmieniać
+i rozpowszechniać, także komercyjnie. Jeśli jednak rozpowszechniasz
+program albo jego zmienioną wersję (np. sprzedajesz płytki z tym firmware
+albo udostępniasz własną wersję aplikacji), musisz udostępnić kod źródłowy
+na tej samej licencji.
 
 ### Fragmenty z innych projektów
 
 * `panel/vigem/ViGEmClient.dll` pochodzi z pakietu
-  [vgamepad](https://pypi.org/project/vgamepad/) (licencja MIT, treść
-  w `panel/vigem/LICENSE-vgamepad.txt`).
+  [vgamepad](https://pypi.org/project/vgamepad/) (licencja MIT, zgodna
+  z GPL, treść w `panel/vigem/LICENSE-vgamepad.txt`).
 * Deskryptor raportu G29 w `firmware/kierownica/g29_usb.h` (opis
   oryginalnego urządzenia Logitech G29, potrzebny do zgodności z grami)
   pochodzi z projektu
   [lgff_wheel_adapter](https://github.com/sonik-br/lgff_wheel_adapter),
-  który jest na licencji GPL-3.0.
+  także na licencji GPL-3.0.
