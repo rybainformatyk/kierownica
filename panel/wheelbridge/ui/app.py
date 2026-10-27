@@ -34,10 +34,11 @@ from .g29tab import G29Tab
 from .theme import Fonts, apply_theme
 from .widgets import (BarMeter, ButtonGrid, Card, HatIndicator, LabeledSlider,
                       Pages, ScrollableFrame, Sparkline, StatRow, StatusDot,
-                      TabBar, TorqueMeter, WheelDial, configure_if_changed)
+                      TabBar, TorqueMeter, WheelDial, configure_if_changed,
+                      round_corners)
 
 APP_TITLE = "Panel kierownicy"
-APP_VERSION = "2.2"
+APP_VERSION = "2.3"
 VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
 
 RANGE_PRESETS = (120, 270, 360, 540, 720, 900, 1080)
@@ -267,6 +268,7 @@ class PanelApp:
         bar = tk.Frame(parent, bg=theme.PANEL, highlightthickness=1,
                        highlightbackground=theme.BORDER)
         bar.pack(fill="x")
+        round_corners(bar, theme.PANEL, r=12)
         inner = tk.Frame(bar, bg=theme.PANEL)
         inner.pack(fill="x", padx=16, pady=12)
 
@@ -298,6 +300,7 @@ class PanelApp:
         status = tk.Frame(right, bg=theme.PANEL_HI, highlightthickness=1,
                           highlightbackground=theme.BORDER)
         status.pack(side="right", padx=(16, 0))
+        round_corners(status, theme.PANEL_HI, outside=theme.PANEL, r=8)
 
         lk = tk.Frame(status, bg=theme.PANEL_HI)
         lk.pack(anchor="w", padx=11, pady=(7, 1))
@@ -717,6 +720,7 @@ class PanelApp:
         strip = tk.Frame(parent, bg=theme.PANEL, highlightthickness=1,
                          highlightbackground=theme.BORDER)
         strip.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        round_corners(strip, theme.PANEL)
         bar = tk.Frame(strip, bg=theme.PANEL)
         bar.pack(fill="x", padx=15, pady=9)
         tick = tk.Frame(bar, bg=theme.ACCENT, width=3, height=13)

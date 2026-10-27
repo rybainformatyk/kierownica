@@ -65,6 +65,9 @@ W trybie pada ustaw **zakres kierownicy na pełne wychylenie drążka** na
 python -m pip install -r requirements.txt
 ```
 
+Instaluje pyserial (łącze z płytką) i Pillow (wygładzone rysunki pada i
+kierownicy).
+
 Uruchomienie: `Kierownica.bat` albo `python kierownica.py`.
 
 ### Sterowniki

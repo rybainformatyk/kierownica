@@ -476,7 +476,12 @@ class WheelEngine:
                 self._ffb_last_sent = 0
 
             dt = time.perf_counter() - t0
-            self._ffb_stop.wait(max(0.0005, period - dt))
+            # time.sleep, nie Event.wait: na Windowsie Event.wait czeka z
+            # dokladnoscia zegara systemu (15,6 ms, gdy gra zaslania panel),
+            # co dawalo ~64 obiegi/s zamiast ustawionych 400. time.sleep
+            # (Python 3.11+) uzywa zegara wysokiej rozdzielczosci. Sygnal
+            # zatrzymania sprawdzamy co obieg, czyli najpozniej po 20 ms.
+            time.sleep(max(0.0005, period - dt))
 
     def _compute_torque(self) -> float:
         f = self.cfg.ffb

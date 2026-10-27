@@ -5,9 +5,10 @@ Panel kierownicy - punkt wejscia.
 Uruchomienie:
     python kierownica.py
 
-Wymagania: Python 3.9+, pyserial. Do tego, zeby gry widzialy kierownice,
-potrzebny jest sterownik vJoy - aplikacja dziala takze bez niego
-(w trybie podgladu) i powie, co zainstalowac.
+Wymagania: Python 3.9+, pyserial, Pillow (rysunki pada i kierownicy).
+Do tego, zeby gry widzialy kierownice w trybie vJoy, potrzebny jest
+sterownik vJoy - aplikacja dziala takze bez niego (w trybie podgladu)
+i powie, co zainstalowac.
 """
 
 import sys
@@ -47,6 +48,15 @@ def main() -> None:
              "    python -m pip install -r requirements.txt\n\n"
              "albo:\n\n"
              "    python -m pip install pyserial")
+
+    try:
+        from PIL import ImageTk  # noqa: F401
+    except ImportError:
+        _die("Brak biblioteki Pillow",
+             "Zainstaluj zależności:\n\n"
+             "    python -m pip install -r requirements.txt\n\n"
+             "albo:\n\n"
+             "    python -m pip install Pillow")
 
     try:
         import tkinter  # noqa: F401

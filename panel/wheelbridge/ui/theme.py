@@ -117,7 +117,7 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
 
     # ---- przyciski ----
     style.configure("TButton", background=PANEL_HI, foreground=TEXT,
-                    bordercolor=BORDER, relief="flat", padding=(13, 7),
+                    bordercolor=BORDER, relief="flat", padding=(14, 8),
                     font=fonts.base, focusthickness=0)
     style.map("TButton",
               background=[("disabled", PANEL), ("pressed", ACCENT_DEEP),
@@ -139,17 +139,18 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
               background=[("pressed", "#52262d"), ("active", "#4a2a31")],
               foreground=[("active", BAD)])
 
-    style.configure("Small.TButton", padding=(10, 4), font=fonts.small)
+    style.configure("Small.TButton", padding=(11, 5), font=fonts.small)
     style.map("Small.TButton",
               background=[("disabled", PANEL), ("pressed", ACCENT_DEEP),
                           ("active", ELEV)])
 
     style.configure("Ghost.TButton", background=PANEL, foreground=TEXT_DIM,
-                    bordercolor=BORDER, padding=(10, 4), font=fonts.small)
+                    bordercolor=BORDER, padding=(11, 5), font=fonts.small)
     style.map("Ghost.TButton",
               background=[("pressed", PANEL_HI), ("active", PANEL_HI)],
               foreground=[("active", TEXT)],
               bordercolor=[("active", BORDER_HI)])
+    _rounded_buttons(root, style)
 
     # ---- notatnik ----
     #
@@ -239,6 +240,57 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
                     bordercolor=BORDER, arrowcolor=TEXT_DIM, padding=(6, 3))
 
     return style
+
+
+def _rounded_buttons(root: tk.Misc, style: ttk.Style) -> None:
+    """Zaokraglone przyciski: tlo z wygladzonego obrazka 9-slice.
+
+    Motyw "clam" rysuje tylko prostokaty. Element "image" z border=8
+    zostawia rogi obrazka bez zmian, a rozciaga srodek - przycisk ma
+    zaokraglone rogi w kazdym rozmiarze. padding=0 - odstep napisu od
+    krawedzi daje dalej "padding" stylu, nie ramka obrazka. Kolory napisow
+    zostaja w
+    style.map powyzej; tu tylko tlo dla stanow: zwykly, kursor,
+    wcisniety, wylaczony.
+    """
+    from . import art               # art potrzebuje Pillow - tylko tutaj
+
+    keep = getattr(root, "_theme_images", None)
+    if keep is None:
+        keep = root._theme_images = []
+
+    def image(fill: str, edge: str):
+        size, r = 24, 7
+        p = art.Paint(size, size)
+        p.fill(("rrect", 0, 0, size, size, r), edge)
+        p.fill(("rrect", 1, 1, size - 1, size - 1, r - 1), fill)
+        photo = art.photo(p.image(), root)
+        keep.append(photo)
+        return photo
+
+    def make(layout: str, element: str, normal, active, pressed, disabled):
+        try:
+            style.element_create(element, "image", image(*normal),
+                                 ("disabled", image(*disabled)),
+                                 ("pressed", image(*pressed)),
+                                 ("active", image(*active)),
+                                 border=8, padding=0, sticky="nsew")
+        except tk.TclError:
+            return                      # element juz jest (drugie wywolanie)
+        style.layout(layout, [(element, {"sticky": "nswe", "children": [
+            ("Button.padding", {"sticky": "nswe", "children": [
+                ("Button.label", {"sticky": "nswe"})]})]})])
+
+    # Small.TButton dziedziczy uklad po TButton
+    make("TButton", "Rnd.border", (PANEL_HI, BORDER), (ELEV, BORDER_HI),
+         (ACCENT_DEEP, ACCENT_DIM), (PANEL, BORDER))
+    make("Accent.TButton", "RndAccent.border", (ACCENT, ACCENT),
+         ("#6ccfff", "#6ccfff"), ("#2f9fd8", "#2f9fd8"),
+         (ACCENT_DIM, ACCENT_DIM))
+    make("Danger.TButton", "RndDanger.border", ("#3a2028", "#4a2831"),
+         ("#4a2a31", "#5a3039"), ("#52262d", "#5a3039"), (PANEL, BORDER))
+    make("Ghost.TButton", "RndGhost.border", (PANEL, BORDER),
+         (PANEL_HI, BORDER_HI), (PANEL_HI, BORDER_HI), (PANEL, BORDER))
 
 
 def mix(color_a: str, color_b: str, t: float) -> str:

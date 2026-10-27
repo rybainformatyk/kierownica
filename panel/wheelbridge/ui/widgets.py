@@ -7,7 +7,9 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple
 
-from . import theme
+from PIL import Image, ImageChops, ImageDraw
+
+from . import art, theme
 from .theme import Fonts
 
 
@@ -53,6 +55,47 @@ def configure_if_changed(widget: tk.Misc, **options) -> None:
         widget.configure(**changed)
 
 
+# ----------------------------------------------------------- narozniki
+
+def _corner_images(widget: tk.Misc, inside: str, border: str, outside: str,
+                   r: int) -> List[object]:
+    """Cztery wygladzone narozniki (lg, pg, ld, pd) - wspolne dla okna."""
+    root = widget.winfo_toplevel()
+    cache = getattr(root, "_corner_cache", None)
+    if cache is None:
+        cache = root._corner_cache = {}
+    key = (inside, border, outside, r)
+    if key not in cache:
+        size = 4 * r
+        paint = art.Paint(size, size)
+        paint.fill(("rrect", 0, 0, size, size, 0), outside)
+        paint.fill(("rrect", 0, 0, size, size, r), border)
+        paint.fill(("rrect", 1, 1, size - 1, size - 1, r - 1), inside)
+        tl = paint.image().crop((0, 0, r, r)).convert("RGB")
+        flips = (None, Image.FLIP_LEFT_RIGHT, Image.FLIP_TOP_BOTTOM,
+                 Image.ROTATE_180)
+        cache[key] = [art.photo(tl if f is None else tl.transpose(f), root)
+                      for f in flips]
+    return cache[key]
+
+
+def round_corners(frame: tk.Misc, inside: str, border: str = theme.BORDER,
+                  outside: str = theme.BG, r: int = 10) -> None:
+    """Zaokragla rogi prostokatnej ramki z cienka obwodka.
+
+    Tk nie umie zaokraglac ramek, wiec na kazdy rog kladziemy maly
+    wygladzony obrazek: na zewnatrz luku kolor tla pod ramka, na luku
+    obwodka, w srodku kolor ramki. bordermode="outside" - obrazek lezy
+    takze na obwodce rysowanej przez highlightthickness.
+    """
+    images = _corner_images(frame, inside, border, outside, r)
+    for image, (relx, rely, anchor) in zip(images, ((0, 0, "nw"), (1, 0, "ne"),
+                                                    (0, 1, "sw"), (1, 1, "se"))):
+        tk.Label(frame, image=image, bd=0, highlightthickness=0, padx=0,
+                 pady=0, bg=outside).place(relx=relx, rely=rely, anchor=anchor,
+                                           bordermode="outside")
+
+
 # -------------------------------------------------------------------- karta
 
 class Card(ttk.Frame):
@@ -65,6 +108,7 @@ class Card(ttk.Frame):
         super().__init__(self.outer, style="Card.TFrame",
                          padding=(15, 12, 15, 14), **kw)
         super().pack(fill="both", expand=True, padx=1, pady=1)
+        round_corners(self.outer, theme.PANEL)
 
         self._fonts = fonts
         header = ttk.Frame(self, style="Card.TFrame")
@@ -277,11 +321,16 @@ class StatusDot(tk.Canvas):
 class WheelDial(tk.Canvas):
     """Duzy wskaznik kata obrotu kierownicy z grafika kola.
 
-    Odczyt kata stoi pod pierscieniem, a nie na kole - wczesniej ramka z
-    liczba i napis zakresu zaslanialy szprychy i wskazowke.
+    Rysowany w Pillow (art.py), wiec krawedzie sa gladkie. Stale tlo i
+    obrazek kola powstaja raz; przy ruchu skladamy tylko klatke: tlo, luk
+    zakresu (maska pierscienia) i obrocone kolo - kilka milisekund i tylko
+    wtedy, gdy kierownica naprawde sie ruszyla.
+
+    Odczyt kata stoi pod pierscieniem, a nie na kole - nic go nie zaslania.
     """
 
     READOUT_H = 62              # pas pod pierscieniem na odczyt
+    MIN_STEP = 0.2              # mniejsza zmiana kata nie przerysowuje
 
     def __init__(self, master: tk.Misc, fonts: Fonts, size: int = 250) -> None:
         super().__init__(master, width=size, height=size + self.READOUT_H,
@@ -290,81 +339,95 @@ class WheelDial(tk.Canvas):
         self._size = size
         self._range = 900.0
         self._deg = 0.0
-        self._items_built = False
+        self._wheels: dict = {}         # kolor znacznika -> obrazek kola
         self._build()
 
     # ------------------------------------------------------------------ build
 
     def _build(self) -> None:
         s = self._size
-        cx = cy = s / 2
-        ring_w = max(8, s // 20)
-        r_out = s / 2 - 5
+        c = s / 2
+        self._ring_w = ring_w = max(9, s // 19)
+        r_out = s / 2 - 6
+        self._r_mid = r_out - ring_w / 2
         r_in = r_out - ring_w
+        self._wheel_r = r_in - 20
 
-        # tlo pierscienia
-        self.create_oval(cx - r_out, cy - r_out, cx + r_out, cy + r_out,
-                         outline=theme.TRACK, width=ring_w, fill="")
-
-        # luk postepu (rysowany od gory, start=90)
-        self._arc = self.create_arc(cx - r_out, cy - r_out, cx + r_out, cy + r_out,
-                                    start=90, extent=0, style="arc",
-                                    outline=theme.ACCENT, width=ring_w)
-
-        # znaczniki co 1/8 zakresu
+        # tlo: rowek pierscienia, podzialka i znacznik zera
+        p = art.Paint(s, s)
+        p.fill(("ring", c, c, r_out, r_in, 0.0, 360.0), theme.TRACK)
+        p.stroke(("circle", c, c, r_out), "#000000", 1.0, alpha=60)
         for i in range(-4, 5):
-            frac = i / 4.0
-            ang = math.radians(90 - frac * 180.0)
-            length = 10 if i % 2 == 0 else 5
-            r1 = r_in - 4
-            r0 = r1 - length
-            color = theme.TEXT_DIM if i % 2 == 0 else theme.BORDER
-            self.create_line(cx + r0 * math.cos(ang), cy - r0 * math.sin(ang),
-                             cx + r1 * math.cos(ang), cy - r1 * math.sin(ang),
-                             fill=color, width=2 if i % 2 == 0 else 1,
-                             capstyle="round")
+            a = math.radians(-90 + i * 45.0)
+            major = i % 2 == 0
+            r1 = r_in - 5
+            r0 = r1 - (10 if major else 5)
+            p.line([(c + r0 * math.cos(a), c + r0 * math.sin(a)),
+                    (c + r1 * math.cos(a), c + r1 * math.sin(a))],
+                   theme.TEXT_DIM if major else theme.BORDER_HI,
+                   2.0 if major else 1.2)
+        p.fill(("poly", ((c, c - r_out + 1), (c - 5, c - r_out - 6),
+                         (c + 5, c - r_out - 6))), theme.MUTED)
+        # Klatka jest nieprzezroczysta (tlo karty pod spodem): obrazek z
+        # przezroczystoscia Tk przyjmuje kilkadziesiat razy wolniej.
+        self._base = art.opaque(p.image(), theme.PANEL)
 
-        # wskaznik zera na szczycie pierscienia
-        self.create_polygon(cx, cy - r_out - 1, cx - 5, cy - r_out - 9,
-                            cx + 5, cy - r_out - 9,
-                            fill=theme.MUTED, outline="")
+        # maska pelnego pierscienia postepu i okragly koniec luku
+        m = art.Paint(s, s)
+        m.fill(("ring", c, c, r_out - 1, r_in + 1, 0.0, 360.0), "#ffffff")
+        self._ring_mask = m.image().getchannel("A")
+        d = int(math.ceil(ring_w - 2)) + 2
+        cap = art.Paint(d, d)
+        cap.fill(("circle", d / 2, d / 2, (ring_w - 2) / 2), "#ffffff")
+        self._cap = cap.image().getchannel("A")
 
-        # kolo kierownicy: obrecz, plyta z dwoma ramionami i dolna szprycha
-        wheel_r = r_in - 20
-        self._wheel_r = wheel_r
-        self._cx, self._cy = cx, cy
-        rim_w = max(6, s // 30)
-        self.create_oval(cx - wheel_r, cy - wheel_r, cx + wheel_r, cy + wheel_r,
-                         outline=theme.darken(theme.PANEL_HI, 0.45),
-                         width=rim_w + 4, fill="")
-        self.create_oval(cx - wheel_r, cy - wheel_r, cx + wheel_r, cy + wheel_r,
-                         outline=theme.mix(theme.PANEL_HI, theme.TEXT, 0.20),
-                         width=rim_w, fill="")
-        self._spokes: List[int] = []
-        for _ in range(3):
-            self._spokes.append(self.create_line(
-                cx, cy, cx, cy, fill=theme.mix(theme.PANEL_HI, theme.TEXT, 0.12),
-                width=rim_w + 2, capstyle="round"))
-        hub_r = max(14, s // 14)
-        self._hub_ring = self.create_oval(cx - hub_r - 4, cy - hub_r - 4,
-                                          cx + hub_r + 4, cy + hub_r + 4,
-                                          fill=theme.PANEL_HI, outline="")
-        self._hub = self.create_oval(cx - hub_r, cy - hub_r, cx + hub_r,
-                                     cy + hub_r, fill=theme.PANEL,
-                                     outline=theme.ACCENT_DIM, width=2)
-        # znacznik "gora kierownicy" na obreczy - jak pasek na prawdziwym kole
-        self._marker = self.create_line(cx, cy, cx, cy, fill=theme.ACCENT,
-                                        width=rim_w + 1, capstyle="round")
+        self._frame = art.photo(self._base.convert("RGB"), self)
+        self.create_image(0, 0, image=self._frame, anchor="nw")
 
-        # odczyt pod pierscieniem - nic go nie zaslania
+        # odczyt pod pierscieniem
         ry = s + 6
-        self._text = self.create_text(cx, ry + 16, text="0°",
+        self._text = self.create_text(c, ry + 16, text="0°",
                                       font=self._fonts.big, fill=theme.TEXT)
-        self._range_text = self.create_text(cx, ry + 46, text="zakres 900°",
+        self._range_text = self.create_text(c, ry + 46, text="zakres 900°",
                                             font=self._fonts.small,
                                             fill=theme.MUTED)
-        self._items_built = True
         self._redraw()
+
+    def _wheel_image(self, marker: str):
+        """Kolo kierownicy (obrecz, ramiona, piasta) - jedno na kolor."""
+        img = self._wheels.get(marker)
+        if img is not None:
+            return img
+        r = self._wheel_r
+        rim_w = max(7.0, self._size / 26)
+        half = int(math.ceil(r + rim_w)) + 4
+        p = art.Paint(half * 2, half * 2)
+        c = float(half)
+        rim = ("ring", c, c, r + rim_w / 2, r - rim_w / 2, 0.0, 360.0)
+        # cien obreczy bez przesuniecia - obraca sie razem z kolem
+        p.shadow(rim, dy=0, blur=4, alpha=150)
+        # ramiona w lewo i w prawo i szprycha w dol - pod obrecza
+        spoke = art.mix(theme.PANEL_HI, theme.TEXT, 0.16)
+        for deg in (0.0, 180.0, 90.0):
+            a = math.radians(deg)
+            p.line([(c, c), (c + r * math.cos(a), c + r * math.sin(a))],
+                   spoke, rim_w + 3, round_caps=False)
+        p.gradient(rim, art.mix(theme.PANEL_HI, theme.TEXT, 0.30),
+                   art.darker(theme.PANEL_HI, 0.25))
+        p.sheen(rim, alpha=40, frac=0.4)
+        hub_r = max(14.0, self._size / 14)
+        p.fill(("circle", c, c, hub_r + 4), theme.PANEL_HI)
+        p.gradient(("circle", c, c, hub_r), "#2a313d", theme.PANEL)
+        p.stroke(("circle", c, c, hub_r), art.mix(theme.ACCENT_DIM, marker, 0.5),
+                 2.0)
+        # pasek "gora kierownicy" na obreczy
+        p.line([(c, c - r - rim_w / 2 + 1), (c, c - r + rim_w / 2 - 1)],
+               marker, rim_w + 1, round_caps=False)
+        img = p.image()
+        if len(self._wheels) > 16:
+            self._wheels.clear()
+        self._wheels[marker] = img
+        return img
 
     # ------------------------------------------------------------------- API
 
@@ -377,7 +440,9 @@ class WheelDial(tk.Canvas):
         self._redraw()
 
     def set_angle(self, degrees: float) -> None:
-        if abs(degrees - self._deg) < 0.05:
+        if degrees != degrees:
+            degrees = 0.0
+        if abs(degrees - self._deg) < self.MIN_STEP:
             return
         self._deg = degrees
         self._redraw()
@@ -385,31 +450,38 @@ class WheelDial(tk.Canvas):
     # --------------------------------------------------------------- rysunek
 
     def _redraw(self) -> None:
-        if not self._items_built:
-            return
+        s = self._size
+        c = s / 2
         half = self._range / 2.0
         frac = max(-1.0, min(1.0, self._deg / half))
-
-        # luk: 0 na gorze, w prawo = ujemny extent
         over = abs(self._deg) > half + 0.5
-        near = min(1.0, max(0.0, (abs(frac) - 0.75) / 0.25))
+        # kolor ma kilka stopni - kolo dla kazdego rysujemy tylko raz
+        near = round(min(1.0, max(0.0, (abs(frac) - 0.75) / 0.25)) * 4) / 4
         color = theme.BAD if over else theme.mix(theme.ACCENT, theme.WARN, near)
-        self.itemconfigure(self._arc, extent=-frac * 180.0, outline=color)
 
-        # obrot kola: ramiona w lewo i w prawo, szprycha w dol
-        cx, cy, r = self._cx, self._cy, self._wheel_r
-        base = math.radians(-self._deg)
-        for spoke, deg in zip(self._spokes, (0, 180, 270)):
-            a = base + math.radians(deg)
-            self.coords(spoke, cx, cy,
-                        cx + r * math.cos(a), cy - r * math.sin(a))
-        a0 = base + math.radians(90)
-        c, s = math.cos(a0), math.sin(a0)
-        self.coords(self._marker, cx + r * 0.88 * c, cy - r * 0.88 * s,
-                    cx + r * 1.04 * c, cy - r * 1.04 * s)
-        self.itemconfigure(self._marker, fill=color)
-        self.itemconfigure(self._hub, outline=theme.mix(theme.ACCENT_DIM,
-                                                        color, 0.5))
+        frame = self._base.copy()
+        if abs(frac) > 0.003:
+            # luk od gory: w prawo zgodnie ze wskazowkami zegara
+            a0, a1 = sorted((-90.0, -90.0 + frac * 180.0))
+            pie = Image.new("L", (s, s), 0)
+            ImageDraw.Draw(pie).pieslice((0, 0, s - 1, s - 1), a0, a1, fill=255)
+            alpha = ImageChops.multiply(self._ring_mask, pie)
+            layer = Image.new("RGBA", (s, s), art.rgba(color, 0))
+            layer.putalpha(alpha)
+            frame.alpha_composite(layer)
+            for a in (a0, a1):
+                rad = math.radians(a)
+                x = c + self._r_mid * math.cos(rad) - self._cap.width / 2
+                y = c + self._r_mid * math.sin(rad) - self._cap.height / 2
+                dot = Image.new("RGBA", self._cap.size, art.rgba(color, 0))
+                dot.putalpha(self._cap)
+                frame.alpha_composite(dot, (int(round(x)), int(round(y))))
+
+        wheel = self._wheel_image(color).rotate(-self._deg,
+                                                resample=Image.BILINEAR)
+        frame.alpha_composite(wheel, (int(round(c - wheel.width / 2)),
+                                      int(round(c - wheel.height / 2))))
+        self._frame.paste(frame.convert("RGB"))
 
         text = "0°" if abs(self._deg) < 0.5 else f"{self._deg:+.0f}°"
         self.itemconfigure(self._text, text=text,

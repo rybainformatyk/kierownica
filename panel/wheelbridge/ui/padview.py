@@ -23,15 +23,16 @@ Warstwa malarska moze sie zmieniac dowolnie, ale te liczby - nie.
 from __future__ import annotations
 
 import tkinter as tk
+from dataclasses import replace
 from tkinter import ttk
 from typing import (Callable, Dict, Iterable, List, Optional, Sequence,
                     Tuple)
 
 from ..config import (PAD_BUTTON_NAMES, PAD_DIRECTIONS, PAD_DIRECTION_LABELS,
                       PAD_DIRECTION_SHORT)
-from . import theme
+from . import art, theme
 from .theme import Fonts
-from .widgets import round_points, set_round_rect
+from .widgets import round_points
 
 #: Kontrolki przyciskowe - tym przypisuje sie przyciski kierownicy.
 CONTROLS = PAD_BUTTON_NAMES
@@ -161,16 +162,35 @@ _CENTER_BTN_X, _CENTER_BTN_Y, _CENTER_BTN_R = 34.0, -8.0, 12.0
 #: Barki i spusty: wspolny zakres w poziomie, zeby czytaly sie jako jeden
 #: blok przylegajacy do gornej krawedzi korpusu.
 _SHOULDER_X = (60.0, 156.0)
-_BUMPER_Y = (-116.0, -90.0)
+_BUMPER_Y = (-118.0, -98.0)            # dol nad przyciskiem Y (gora Y: -96)
 _TRIGGER_Y = (-156.0, -122.0)
 
-#: Kolory korpusu - gradient z gory na dol daje wrazenie bryly.
-_SHELL_TOP = theme.mix(theme.lighten(theme.PANEL_HI, 0.33),
-                       theme.ACCENT, 0.07)
-_SHELL_BOTTOM = theme.darken(theme.PANEL_HI, 0.12)
-_SHELL_MID = theme.mix(_SHELL_TOP, _SHELL_BOTTOM, 0.5)
-_WELL = theme.darken(theme.TRACK, 0.45)       # wglebienie pod drazkiem
-_CAP = theme.lighten(theme.PANEL_HI, 0.22)    # plastik przyciskow
+#: Paleta rysunku: grafitowy plastik, ciemniejsze wglebienia, jasniejsze
+#: przyciski. Ciemniejsze od kart, zeby kontroler odcinal sie od tla.
+_SHELL_TOP = "#465163"
+_SHELL_BOTTOM = "#222934"
+_SHOULDER = "#2b323e"
+_WELL_TOP = "#0d1117"
+_WELL_BOTTOM = "#1f2631"
+
+_INK = "#0b0e14"
+_CAP_STYLE = art.CapStyle(
+    top="#434d5e", bottom="#272e39", edge="#56627a", on=theme.ACCENT,
+    glyph=theme.TEXT_DIM, glyph_on=theme.ACCENT_INK, accent=theme.ACCENT,
+    warn=theme.WARN, ink="#20160a")
+_DARK_STYLE = replace(_CAP_STYLE, top="#2d3440", bottom="#1b2028",
+                      edge="#3e4859")
+_WELL_STYLE = replace(_CAP_STYLE, top=_WELL_TOP, bottom=_WELL_BOTTOM,
+                      edge="#2a323f", gloss=False)
+_KNOB_STYLE = replace(_CAP_STYLE, top="#55617a", bottom="#2c333f",
+                      edge="#68758e")
+
+FACE_COLORS = {
+    "A": "#5ac25a",
+    "B": "#e8534a",
+    "X": "#3f9be8",
+    "Y": "#f0c419",
+}
 
 
 def spline(points: Sequence[Tuple[float, float]],
@@ -197,38 +217,38 @@ def spline(points: Sequence[Tuple[float, float]],
 
 def inside_body(x: float, y: float) -> bool:
     """Czy punkt (wzgledem srodka) lezy w obrysie korpusu."""
-    poly = spline(SILHOUETTE)
-    hit = False
-    j = len(poly) - 1
-    for i, (xi, yi) in enumerate(poly):
-        xj, yj = poly[j]
-        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
-            hit = not hit
-        j = i
-    return hit
+    return art.contains(("poly", tuple(spline(SILHOUETTE))), x, y)
 
 
-def _spans(poly: Sequence[Tuple[float, float]], y: float) -> List[Tuple[float, float]]:
-    """Odcinki poziome, ktore na wysokosci `y` leza wewnatrz wielokata.
+class _Part:
+    """Czesc rysunku: ksztalt, wyglad, obrazek na plotnie i stan."""
 
-    Korpus ma u dolu wciecie miedzy uchwytami, wiec nie wystarczy wziac
-    skrajnych przeciec - trzeba je sparowac.
-    """
-    xs: List[float] = []
-    n = len(poly)
-    for i in range(n):
-        x1, y1 = poly[i]
-        x2, y2 = poly[(i + 1) % n]
-        if (y1 > y) != (y2 > y):
-            xs.append(x1 + (x2 - x1) * (y - y1) / (y2 - y1))
-    xs.sort()
-    return [(xs[i], xs[i + 1]) for i in range(0, len(xs) - 1, 2)]
+    __slots__ = ("name", "shape", "style", "glyph", "clickable", "shadow",
+                 "item", "state", "dx", "dy")
+
+    def __init__(self, name: str, shape: art.Shape, style: art.CapStyle,
+                 glyph: Optional[Callable[[art.Paint, str], None]],
+                 clickable: bool, shadow: bool) -> None:
+        self.name = name
+        self.shape = shape
+        self.style = style
+        self.glyph = glyph
+        self.clickable = clickable
+        self.shadow = shadow
+        self.item = 0
+        self.state = ""
+        self.dx = self.dy = 0.0         # przesuniecie (galka drazka)
 
 
 class PadCanvas(tk.Canvas):
     """Rysowany kontroler: klikalne przyciski, podglad osi na zywo.
 
-    Podklasa (rysunek kierownicy G29) podmienia _CONTROLS, _SIZE i _build().
+    Tlo (korpus) i kazda kontrolka to wygladzone obrazki z art.py. Kontrolka
+    ma gotowy obrazek dla kazdego stanu (zwykla, przypisana, wskazana,
+    wcisnieta, nauka) - zmiana stanu to tylko podmiana obrazka.
+
+    Podklasa (rysunek kierownicy G29) podmienia _CONTROLS, _SIZE, _paint_body
+    i _build_parts().
     """
 
     _CONTROLS: Tuple[str, ...] = CONTROLS
@@ -245,11 +265,10 @@ class PadCanvas(tk.Canvas):
         self._on_button_clear = on_button_clear
         self._on_hover = on_hover
 
-        self._shapes: Dict[str, List[int]] = {}
-        self._base_fill: Dict[str, str] = {}
-        self._on_fill: Dict[str, str] = {}      # kolor wcisnietej kontrolki
-        self._glyph: Dict[str, List[Tuple[List[int], str, str]]] = {}
-        self._region: Dict[int, str] = {}      # id elementu -> nazwa czesci
+        self._parts: Dict[str, _Part] = {}       # w kolejnosci rysowania
+        self._shapes: Dict[str, List[int]] = {}  # nazwa -> [obrazek na plotnie]
+        self._sprites: Dict[Tuple[str, str], Tuple[object, Tuple[int, int]]] = {}
+        self._images: List[object] = []          # tlo i inne stale obrazki
         self._active: Dict[str, bool] = {c: False for c in self._CONTROLS}
         self._assigned: Dict[str, bool] = {c: False for c in self._CONTROLS}
         self._learning: Optional[str] = None
@@ -265,10 +284,6 @@ class PadCanvas(tk.Canvas):
         self._trig_fill: Dict[str, int] = {}
         self._trig_text: Dict[str, int] = {}
         self._trig_box: Dict[str, Tuple[float, float, float, float]] = {}
-        self._knob: Dict[str, int] = {}
-        self._knob_mark: Dict[str, int] = {}
-        self._knob_shadow: Dict[str, int] = {}
-        self._knob_inner: Dict[str, int] = {}
 
         self._build()
         self.bind("<Button-1>", self._on_click)
@@ -278,293 +293,224 @@ class PadCanvas(tk.Canvas):
 
     # ----------------------------------------------------------- budowanie
 
-    def _part(self, name: str, items: Sequence[int], base_fill: str = "",
-              clickable: bool = True, on_fill: str = "") -> None:
-        """Rejestruje czesc rysunku. Nie nazywac tego `_register` - tak
-        nazywa sie wewnetrzna metoda tkinter.Misc, ktorej uzywa bind()."""
-        if base_fill:
-            self._shapes.setdefault(name, []).extend(items)
-            self._base_fill[name] = base_fill
-            if on_fill:
-                self._on_fill[name] = on_fill
-        if clickable:
-            for item in items:
-                self._region[item] = name
-
-    def _mark(self, name: str, items: Sequence[int], normal: str,
-              active: str) -> None:
-        """Napis albo piktogram na kontrolce - zmienia kolor razem z nia.
-
-        Kazde wywolanie to osobna grupa z wlasna para kolorow: napis na
-        przycisku moze zmieniac sie inaczej niz piktogram obok niego.
-        """
-        self._glyph.setdefault(name, []).append((list(items), normal, active))
-        for item in items:
-            self._region[item] = name
-
-    def _round_rect(self, x1, y1, x2, y2, r, **kw) -> int:
-        return self.create_polygon(round_points(x1, y1, x2, y2, r),
-                                   smooth=True, **kw)
-
     def _build(self) -> None:
-        self._build_body()
-        self._build_triggers()
-        self._build_sticks()
-        self._build_dpad()
-        self._build_face()
-        self._build_center()
+        body = art.Paint(self._SIZE[0], self._SIZE[1])
+        self._paint_body(body)
+        self._background = art.photo(
+            art.opaque(body.image(), theme.PANEL).convert("RGB"), self)
+        self.create_image(0, 0, image=self._background, anchor="nw")
+        self._build_parts()
+        self._build_overlay()
         self._refresh()
 
-    def _build_body(self) -> None:
-        poly = spline(SILHOUETTE)
-        abs_poly = [(CX + x, CY + y) for x, y in poly]
+    def _add(self, name: str, shape: art.Shape, style: art.CapStyle,
+             glyph: Optional[Callable[[art.Paint, str], None]] = None,
+             clickable: bool = True, shadow: bool = True) -> _Part:
+        """Dodaje kontrolke (albo czesc tylko do podswietlania).
 
-        # cien pod korpusem - lekko przesuniety obrys w ciemniejszym tonie
-        self.create_polygon([c for p in abs_poly for c in (p[0], p[1] + 8)],
-                            fill=theme.mix(theme.PANEL, theme.SHADOW, 0.5),
-                            outline="")
+        Nie nazywac tego `_register` - tak nazywa sie wewnetrzna metoda
+        tkinter.Misc, ktorej uzywa bind()."""
+        part = _Part(name, shape, style, glyph, clickable, shadow)
+        part.item = self.create_image(0, 0, anchor="nw")
+        self._parts[name] = part
+        self._shapes[name] = [part.item]
+        self._show(part, "idle")
+        return part
 
-        # barki: blok pod spustem i bumperem, wtopiony w korpus - bez niego
-        # oba przyciski wisialy nad rysunkiem bez zadnego oparcia
+    def _sprite(self, part: _Part, state: str):
+        key = (part.name, state)
+        cached = self._sprites.get(key)
+        if cached is None:
+            img, pos = art.render_cap(part.shape, state, part.style,
+                                      part.glyph, part.shadow)
+            cached = (art.photo(img, self), pos)
+            self._sprites[key] = cached
+        return cached
+
+    def _show(self, part: _Part, state: str) -> None:
+        image, (x, y) = self._sprite(part, state)
+        self.itemconfigure(part.item, image=image)
+        self.coords(part.item, x + part.dx, y + part.dy)
+        part.state = state
+
+    def visual_state(self, name: str) -> str:
+        """Stan, w jakim kontrolka jest teraz narysowana (do testow)."""
+        part = self._parts.get(name)
+        return part.state if part else ""
+
+    # --- tlo: korpus pada ---
+
+    def _paint_body(self, p: art.Paint) -> None:
+        body = ("poly", tuple((CX + x, CY + y) for x, y in spline(SILHOUETTE)))
+
+        # barki za spustami - pod korpusem, jak w prawdziwym padzie
         for sign in (-1, 1):
-            lo = CX + sign * (_SHOULDER_X[0] - 4)
-            hi = CX + sign * (_SHOULDER_X[1] + 4)
-            lo, hi = min(lo, hi), max(lo, hi)
-            self._round_rect(lo, CY + _TRIGGER_Y[0] - 5, hi, CY - 40, 16,
-                             fill=theme.darken(_SHELL_MID, 0.18), outline="")
+            lo, hi = sorted((CX + sign * (_SHOULDER_X[0] - 6),
+                             CX + sign * (_SHOULDER_X[1] + 6)))
+            shoulder = ("rrect", lo, CY + _TRIGGER_Y[0] + 8, hi, CY - 60, 22)
+            p.shadow(shoulder, dy=3, blur=4, alpha=120)
+            p.gradient(shoulder, "#353d4a", _SHOULDER)
 
-        # gradient korpusu: linia po linii, obcieta do ksztaltu obrysu
-        ys = [p[1] for p in abs_poly]
-        y0, y1 = min(ys), max(ys)
-        y = y0
-        while y < y1:
-            t = (y - y0) / max(1.0, y1 - y0)
-            color = theme.mix(_SHELL_TOP, _SHELL_BOTTOM, t ** 0.75)
-            for xa, xb in _spans(abs_poly, y + 0.5):
-                self.create_line(xa, y + 0.5, xb, y + 0.5, fill=color)
-            y += 1.0
+        p.shadow(body, dy=12, blur=11, alpha=190)
+        p.gradient(body, _SHELL_TOP, _SHELL_BOTTOM)
+        # swiatlo z gory i lekka poswiata akcentu od dolu - bryla
+        p.sheen(body, alpha=38, frac=0.45)
+        p.radial(CX, CY + 240, 260, theme.ACCENT, theme.ACCENT, alpha_in=22,
+                 alpha_out=0, clip=body)
+        self._edge(p, lambda oy: oy < -60, "#ffffff", 1.6, 60)
+        self._edge(p, lambda oy: oy > 110, "#000000", 2.0, 90)
 
-        # obrys na wierzchu, zeby krawedz byla rowna mimo linii gradientu
-        self.create_polygon([c for p in abs_poly for c in p], fill="",
-                            outline=theme.darken(_SHELL_BOTTOM, 0.25), width=1)
+        # gniazdo krzyzaka i podstawa krzyza
+        dx, dy = CX + _DPAD[0], CY + _DPAD[1]
+        arm, thick = _DPAD_ARM, _DPAD_THICK
+        well = ("circle", dx, dy, arm + 8)
+        p.gradient(well, _WELL_TOP, _WELL_BOTTOM)
+        p.stroke(well, "#000000", 1.0, alpha=120)
+        for box in ((dx - thick / 2, dy - arm, dx + thick / 2, dy + arm),
+                    (dx - arm, dy - thick / 2, dx + arm, dy + thick / 2)):
+            p.shadow(("rrect", *box, 5), dy=2, blur=2, alpha=150)
+        for box in ((dx - thick / 2, dy - arm, dx + thick / 2, dy + arm),
+                    (dx - arm, dy - thick / 2, dx + arm, dy + thick / 2)):
+            p.gradient(("rrect", *box, 5), _CAP_STYLE.top, _CAP_STYLE.bottom,
+                       y0=dy - arm, y1=dy + arm)
+        p.fill(("circle", dx, dy, 3.5), "#1a1f27")
 
-        # swiatlo na gornej krawedzi i cien na dolnej - rysowane po samym
-        # obrysie, wiec zawsze trzymaja sie ksztaltu korpusu
-        self._edge_light([i for i, (_, oy) in enumerate(poly) if oy < -55],
-                         poly, theme.lighten(_SHELL_TOP, 0.22), 2)
-        self._edge_light([i for i, (_, oy) in enumerate(poly) if oy > 120],
-                         poly, theme.darken(_SHELL_BOTTOM, 0.3), 2)
+        # podpisy malych przyciskow
+        for sign, label in ((-1, "Back"), (1, "Start")):
+            p.text(CX + sign * _CENTER_BTN_X,
+                   CY + _CENTER_BTN_Y + _CENTER_BTN_R + 11, label, 7.5,
+                   theme.MUTED)
+        # oprawa przycisku Guide
+        gx, gy = CX + _GUIDE[0], CY + _GUIDE[1]
+        p.fill(("circle", gx, gy, _GUIDE_R + 4), "#1a1f27", alpha=200)
 
-    def _edge_light(self, indices: Sequence[int],
-                    poly: Sequence[Tuple[float, float]],
-                    color: str, width: int) -> None:
-        """Rysuje fragmenty obrysu o podanych indeksach jako osobne kreski."""
-        runs: List[List[int]] = []
-        for i in indices:
-            if runs and i == runs[-1][-1] + 1:
-                runs[-1].append(i)
-            else:
-                runs.append([i])
-        # pierwszy i ostatni fragment sa w rzeczywistosci jednym - obrys
-        # jest zamkniety i zaczyna sie w polowie gornej krawedzi
-        if len(runs) > 1 and runs[0][0] == 0 and runs[-1][-1] == len(poly) - 1:
-            runs[0] = runs[-1] + runs[0]
-            runs.pop()
-        for run in runs:
-            if len(run) < 2:
-                continue
-            pts: List[float] = []
-            for i in run:
-                pts += [CX + poly[i][0], CY + poly[i][1]]
-            self.create_line(*pts, fill=color, width=width, capstyle="round",
-                             smooth=True)
+    def _edge(self, p: art.Paint, which: Callable[[float], bool], color: str,
+              width: float, alpha: int) -> None:
+        """Swiatlo albo cien na fragmentach obrysu korpusu."""
+        poly = spline(SILHOUETTE)
+        run: List[Tuple[float, float]] = []
+        runs: List[List[Tuple[float, float]]] = []
+        # zaczynamy od punktu, ktory sie nie kwalifikuje - zamkniety obrys
+        # nie rozpadnie sie wtedy na dwa kawalki tego samego luku
+        start = next((i for i, (_x, oy) in enumerate(poly) if not which(oy)), 0)
+        n = len(poly)
+        for k in range(n + 1):
+            x, oy = poly[(start + k) % n]
+            if which(oy):
+                run.append((CX + x, CY + oy))
+            elif run:
+                runs.append(run)
+                run = []
+        if run:
+            runs.append(run)
+        for r in runs:
+            if len(r) >= 2:
+                inset = [(x, y + width / 2 if color == "#ffffff" else y - width / 2)
+                         for x, y in r]
+                p.line(inset, color, width, alpha=alpha)
 
-    def _build_triggers(self) -> None:
+    # --- kontrolki ---
+
+    def _build_parts(self) -> None:
+        f = self._fonts
+
+        # spusty: panel z miernikiem; sam miernik i liczba to elementy plotna
         for name in ("LT", "RT"):
             sign = -1 if name == "LT" else 1
-            lo = CX + sign * _SHOULDER_X[0]
-            hi = CX + sign * _SHOULDER_X[1]
-            lo, hi = min(lo, hi), max(lo, hi)
+            lo, hi = sorted((CX + sign * _SHOULDER_X[0], CX + sign * _SHOULDER_X[1]))
             box = (lo, CY + _TRIGGER_Y[0], hi, CY + _TRIGGER_Y[1])
-            bg = self._round_rect(*box, 10, fill=theme.TRACK,
-                                  outline=theme.BORDER_HI)
-            fill = self.create_polygon(
-                round_points(lo + 4, box[1] + 4, lo + 4, box[3] - 4, 6),
-                smooth=True, fill=theme.mix(theme.ACCENT, "#000000", 0.25),
-                outline="")
-            text = self.create_text((lo + hi) / 2, (box[1] + box[3]) / 2,
-                                    text=name, font=self._fonts.bold,
-                                    fill=theme.TEXT)
-            self._trig_fill[name] = fill
-            self._trig_text[name] = text
             self._trig_box[name] = box
-            self._part(name, [bg], theme.TRACK)
-            self._mark(name, [text], theme.TEXT, theme.ACCENT_INK)
+            self._add(name, ("rrect", *box, 11), _DARK_STYLE, clickable=False)
 
         for name in ("LB", "RB"):
             sign = -1 if name == "LB" else 1
-            lo = CX + sign * _SHOULDER_X[0]
-            hi = CX + sign * _SHOULDER_X[1]
-            lo, hi = min(lo, hi), max(lo, hi)
+            lo, hi = sorted((CX + sign * _SHOULDER_X[0], CX + sign * _SHOULDER_X[1]))
             box = (lo, CY + _BUMPER_Y[0], hi, CY + _BUMPER_Y[1])
-            item = self._round_rect(*box, 10, fill=_CAP,
-                                    outline=theme.BORDER_HI)
-            text = self.create_text((lo + hi) / 2, (box[1] + box[3]) / 2,
-                                    text=name, font=self._fonts.small_bold,
-                                    fill=theme.TEXT_DIM)
-            self._part(name, [item], _CAP)
-            self._mark(name, [text], theme.TEXT_DIM, theme.ACCENT_INK)
+            self._add(name, ("rrect", *box, 12), _CAP_STYLE,
+                      glyph=_text_glyph((lo + hi) / 2, (box[1] + box[3]) / 2,
+                                        name, 9, bold=True))
 
-    def _build_sticks(self) -> None:
+        # drazki: wglebienie (tylko podswietlanie) i galka (klik = L3/R3)
         for side, (ox, oy) in _STICKS.items():
             sx, sy = CX + ox, CY + oy
-            ring = self.create_oval(sx - _STICK_RING, sy - _STICK_RING,
-                                    sx + _STICK_RING, sy + _STICK_RING,
-                                    fill=_WELL, outline=theme.BORDER)
-            self.create_oval(sx - _STICK_RING + 6, sy - _STICK_RING + 6,
-                             sx + _STICK_RING - 6, sy + _STICK_RING - 6,
-                             fill=theme.darken(theme.TRACK, 0.2), outline="")
-            self.create_oval(sx - _STICK_RING + 12, sy - _STICK_RING + 12,
-                             sx + _STICK_RING - 12, sy + _STICK_RING - 12,
-                             fill=theme.darken(theme.TRACK, 0.38), outline="")
-            # cztery kreski przy krawedzi - od razu widac, ktory kierunek
-            # to ktora os, a nic nie przecina samej galki
-            guide = theme.lighten(theme.TRACK, 0.22)
-            for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
-                self.create_line(sx + dx * 25, sy + dy * 25,
-                                 sx + dx * 32, sy + dy * 32,
-                                 fill=guide, width=2, capstyle="round")
+            self._add("STICK_L" if side == "L" else "STICK_R",
+                      ("circle", sx, sy, _STICK_RING), _WELL_STYLE,
+                      glyph=_stick_ticks(sx, sy), clickable=False, shadow=False)
+        for side, (ox, oy) in _STICKS.items():
+            sx, sy = CX + ox, CY + oy
+            self._add("LS" if side == "L" else "RS",
+                      ("circle", sx, sy, _STICK_KNOB), _KNOB_STYLE,
+                      glyph=_knob_glyph(sx, sy, "L3" if side == "L" else "R3"))
 
-            name = "LS" if side == "L" else "RS"
-            shadow = self.create_oval(sx - _STICK_KNOB, sy - _STICK_KNOB + 3,
-                                      sx + _STICK_KNOB, sy + _STICK_KNOB + 3,
-                                      fill=theme.darken(theme.TRACK, 0.6),
-                                      outline="")
-            knob = self.create_oval(sx - _STICK_KNOB, sy - _STICK_KNOB,
-                                    sx + _STICK_KNOB, sy + _STICK_KNOB,
-                                    fill=_CAP, outline=theme.BORDER_HI,
-                                    width=2)
-            inner = self.create_oval(sx - _STICK_KNOB + 6, sy - _STICK_KNOB + 6,
-                                     sx + _STICK_KNOB - 6, sy + _STICK_KNOB - 6,
-                                     fill=theme.darken(theme.PANEL_HI, 0.25),
-                                     outline="")
-            mark = self.create_text(sx, sy, text="L3" if side == "L" else "R3",
-                                    font=self._fonts.tiny, fill=theme.TEXT_DIM)
-            self._knob[side] = knob
-            self._knob_mark[side] = mark
-            self._knob_shadow[side] = shadow
-            self._knob_inner[side] = inner
-            self._part(name, [knob], _CAP)
-            self._mark(name, [mark], theme.TEXT_DIM, theme.ACCENT_INK)
-            self._region[inner] = name
-            # pierscien nie uruchamia nauki, ale najechanie na niego
-            # podswietla wiersze wszystkich kierunkow tego drazka
-            self._part("STICK_L" if side == "L" else "STICK_R", [ring], _WELL)
-
-    def _build_dpad(self) -> None:
+        # krzyzak: cztery ramiona; srodek krzyza jest w tle
         dx, dy = CX + _DPAD[0], CY + _DPAD[1]
-        arm, thick = _DPAD_ARM, _DPAD_THICK
+        arm, half = _DPAD_ARM, _DPAD_THICK / 2
+        inner = half - 1
         specs = {
-            "DPAD_UP": (dx - thick / 2, dy - arm, dx + thick / 2, dy + 2),
-            "DPAD_DOWN": (dx - thick / 2, dy - 2, dx + thick / 2, dy + arm),
-            "DPAD_LEFT": (dx - arm, dy - thick / 2, dx + 2, dy + thick / 2),
-            "DPAD_RIGHT": (dx - 2, dy - thick / 2, dx + arm, dy + thick / 2),
+            "DPAD_UP": ((dx - half, dy - arm, dx + half, dy - inner), (0, -1)),
+            "DPAD_DOWN": ((dx - half, dy + inner, dx + half, dy + arm), (0, 1)),
+            "DPAD_LEFT": ((dx - arm, dy - half, dx - inner, dy + half), (-1, 0)),
+            "DPAD_RIGHT": ((dx + inner, dy - half, dx + arm, dy + half), (1, 0)),
         }
-        self.create_oval(dx - arm - 9, dy - arm - 9, dx + arm + 9, dy + arm + 9,
-                         fill=_WELL, outline=theme.BORDER)
-        self.create_oval(dx - arm - 4, dy - arm - 4, dx + arm + 4, dy + arm + 4,
-                         fill=theme.darken(theme.TRACK, 0.25), outline="")
-        # strzalki rysujemy osobno, zeby zmienialy kolor razem z ramieniem
-        tip = thick * 0.26
-        arrows = {
-            "DPAD_UP": (dx, dy - arm + 9, dx - tip, dy - arm + 9 + tip * 1.4,
-                        dx + tip, dy - arm + 9 + tip * 1.4),
-            "DPAD_DOWN": (dx, dy + arm - 9, dx - tip, dy + arm - 9 - tip * 1.4,
-                          dx + tip, dy + arm - 9 - tip * 1.4),
-            "DPAD_LEFT": (dx - arm + 9, dy, dx - arm + 9 + tip * 1.4, dy - tip,
-                          dx - arm + 9 + tip * 1.4, dy + tip),
-            "DPAD_RIGHT": (dx + arm - 9, dy, dx + arm - 9 - tip * 1.4, dy - tip,
-                           dx + arm - 9 - tip * 1.4, dy + tip),
-        }
-        for name, box in specs.items():
-            item = self._round_rect(*box, 6, fill=_CAP,
-                                    outline=theme.BORDER_HI)
-            self._part(name, [item], _CAP)
-        self._round_rect(dx - thick / 2 + 1, dy - thick / 2 + 1,
-                         dx + thick / 2 - 1, dy + thick / 2 - 1, 4,
-                         fill=_CAP, outline="")
-        self.create_oval(dx - 3, dy - 3, dx + 3, dy + 3,
-                         fill=theme.darken(theme.PANEL_HI, 0.3), outline="")
-        for name, pts in arrows.items():
-            glyph = self.create_polygon(*pts, fill=theme.MUTED, outline="")
-            self._mark(name, [glyph], theme.MUTED, theme.ACCENT_INK)
+        for name, (box, direction) in specs.items():
+            cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            self._add(name, ("rrect", *box, 5), _CAP_STYLE,
+                      glyph=_arrow_glyph(cx, cy, direction, 4.2), shadow=False)
 
-    def _build_face(self) -> None:
+        # przyciski A B X Y: ciemny plastik i kolorowa litera
         fx, fy = CX + _FACE[0], CY + _FACE[1]
-        r, off = _FACE_R, _FACE_OFFSET
+        off = _FACE_OFFSET
         for name, ox, oy in (("Y", 0, -off), ("X", -off, 0),
                              ("B", off, 0), ("A", 0, off)):
-            x, y = fx + ox, fy + oy
             color = FACE_COLORS[name]
-            self.create_oval(x - r - 2, y - r + 1, x + r + 2, y + r + 4,
-                             fill=theme.darken(theme.TRACK, 0.55), outline="")
-            base = theme.mix(_CAP, color, 0.12)
-            item = self.create_oval(x - r, y - r, x + r, y + r,
-                                    fill=base, outline=color, width=2)
-            text = self.create_text(x, y, text=name, font=self._fonts.bold,
-                                    fill=color)
-            self._part(name, [item], base, on_fill=color)
-            self._mark(name, [text], color, theme.darken(color, 0.78))
+            style = replace(_CAP_STYLE, top="#333a46", bottom="#1e232c",
+                            edge=art.mix("#3e4859", color, 0.35), on=color,
+                            glyph=color, glyph_on=_INK)
+            self._add(name, ("circle", fx + ox, fy + oy, _FACE_R), style,
+                      glyph=_text_glyph(fx + ox, fy + oy + 0.5, name, 13,
+                                        bold=True))
 
-    def _build_center(self) -> None:
+        # Back i Start
         r = _CENTER_BTN_R
-        for name, sign, label in (("BACK", -1, "Back"), ("START", 1, "Start")):
-            x = CX + sign * _CENTER_BTN_X
-            y = CY + _CENTER_BTN_Y
-            item = self.create_oval(x - r, y - r, x + r, y + r,
-                                    fill=_CAP, outline=theme.BORDER_HI)
-            if name == "BACK":
-                glyphs = [self.create_rectangle(x - 5, y - 3, x - 1, y + 3,
-                                                fill=theme.MUTED, outline=""),
-                          self.create_rectangle(x + 1, y - 3, x + 5, y + 3,
-                                                fill=theme.MUTED, outline="")]
-            else:
-                glyphs = [self.create_rectangle(x - 5, y - 4 + i * 3,
-                                                x + 5, y - 3 + i * 3,
-                                                fill=theme.MUTED, outline="")
-                          for i in range(3)]
-            text = self.create_text(x, y + r + 11, text=label,
-                                    font=self._fonts.tiny, fill=theme.MUTED)
-            self._part(name, [item], _CAP)
-            self._mark(name, glyphs, theme.MUTED, theme.ACCENT_INK)
-            self._mark(name, [text], theme.MUTED, theme.ACCENT)
+        for name, sign in (("BACK", -1), ("START", 1)):
+            x, y = CX + sign * _CENTER_BTN_X, CY + _CENTER_BTN_Y
+            self._add(name, ("circle", x, y, r), _CAP_STYLE,
+                      glyph=_view_glyph(x, y) if name == "BACK"
+                      else _menu_glyph(x, y))
 
+        # Guide
         x, y = CX + _GUIDE[0], CY + _GUIDE[1]
-        self.create_oval(x - _GUIDE_R - 3, y - _GUIDE_R - 3,
-                         x + _GUIDE_R + 3, y + _GUIDE_R + 3,
-                         fill=theme.darken(theme.TRACK, 0.35), outline="")
-        item = self.create_oval(x - _GUIDE_R, y - _GUIDE_R,
-                                x + _GUIDE_R, y + _GUIDE_R,
-                                fill=_CAP, outline=theme.BORDER_HI, width=2)
-        self._part("GUIDE", [item], _CAP)
-        self.create_oval(x - 13, y - 13, x + 13, y + 13,
-                         fill=theme.darken(_CAP, 0.3), outline="")
-        # znak "X" rysowany kreskami - niezaleznie od tego, czy czcionka
-        # systemowa ma akurat taki znak w zestawie
-        cross = [self.create_line(x - 7, y - 7, x + 7, y + 7, width=3,
-                                  capstyle="round", fill=theme.TEXT_DIM),
-                 self.create_line(x - 7, y + 7, x + 7, y - 7, width=3,
-                                  capstyle="round", fill=theme.TEXT_DIM)]
-        self._mark("GUIDE", cross, theme.TEXT_DIM, theme.ACCENT_INK)
+        self._add("GUIDE", ("circle", x, y, _GUIDE_R),
+                  replace(_KNOB_STYLE, glyph=theme.TEXT),
+                  glyph=_guide_glyph(x, y))
+
+    def _build_overlay(self) -> None:
+        """Miernik spustow i liczby - zwykle elementy plotna nad obrazkami
+        (proste prostokaty nie potrzebuja wygladzania)."""
+        for name, (x1, y1, x2, y2) in self._trig_box.items():
+            # rowek miernika na dole panelu, nad nim nazwa i wartosc
+            self.create_rectangle(x1 + 10, y2 - 9, x2 - 10, y2 - 6,
+                                  fill="#0e1116", outline="")
+            self._trig_fill[name] = self.create_rectangle(
+                x1 + 10, y2 - 9, x1 + 10, y2 - 6, fill=theme.ACCENT,
+                outline="", state="hidden")
+            self._trig_text[name] = self.create_text(
+                (x1 + x2) / 2, (y1 + y2) / 2 - 3, text=name,
+                font=self._fonts.small_bold, fill=theme.TEXT_DIM)
 
     # ---------------------------------------------------------- interakcja
 
+    def parts_at(self, x: float, y: float) -> List[str]:
+        """Wszystkie czesci pod punktem, od wierzchniej (do testow i klikania)."""
+        out = []
+        for part in reversed(list(self._parts.values())):
+            if art.contains(part.shape, x - part.dx, y - part.dy):
+                out.append(part.name)
+        return out
+
     def _hit(self, x: float, y: float) -> Optional[str]:
-        for item in reversed(self.find_overlapping(x - 1, y - 1, x + 1, y + 1)):
-            name = self._region.get(item)
-            if name is not None:
-                return name
-        return None
+        names = self.parts_at(x, y)
+        return names[0] if names else None
 
     def _on_click(self, event) -> None:
         name = self._hit(event.x, event.y)
@@ -633,22 +579,17 @@ class PadCanvas(tk.Canvas):
 
     def set_sticks(self, lx: float, ly: float, rx: float, ry: float) -> None:
         # co klatke przychodzi to samo, gdy nikt nie rusza drazkiem -
-        # przesuwanie ksztaltow w miejscu to zbedne przerysowanie
+        # przesuwanie obrazkow w miejscu to zbedne przerysowanie
         key = (round(lx, 3), round(ly, 3), round(rx, 3), round(ry, 3))
         if key == self._sticks_shown:
             return
         self._sticks_shown = key
         for side, (dx, dy) in (("L", (lx, ly)), ("R", (rx, ry))):
-            ox, oy = _STICKS[side]
-            px = CX + ox + max(-1.0, min(1.0, dx)) * _STICK_TRAVEL
-            py = CY + oy - max(-1.0, min(1.0, dy)) * _STICK_TRAVEL
-            k = _STICK_KNOB
-            self.coords(self._knob[side], px - k, py - k, px + k, py + k)
-            self.coords(self._knob_shadow[side], px - k, py - k + 3,
-                        px + k, py + k + 3)
-            self.coords(self._knob_inner[side], px - k + 6, py - k + 6,
-                        px + k - 6, py + k - 6)
-            self.coords(self._knob_mark[side], px, py)
+            part = self._parts["LS" if side == "L" else "RS"]
+            part.dx = max(-1.0, min(1.0, dx)) * _STICK_TRAVEL
+            part.dy = -max(-1.0, min(1.0, dy)) * _STICK_TRAVEL
+            _image, (x, y) = self._sprite(part, part.state)
+            self.coords(part.item, x + part.dx, y + part.dy)
 
     def set_triggers(self, lt: int, rt: int) -> None:
         key = (int(lt), int(rt))
@@ -658,40 +599,100 @@ class PadCanvas(tk.Canvas):
         for name, raw in (("LT", lt), ("RT", rt)):
             raw = max(0, min(255, int(raw)))
             x1, y1, x2, y2 = self._trig_box[name]
-            width = (x2 - x1 - 8) * raw / 255.0
+            width = (x2 - x1 - 20) * raw / 255.0
             self.itemconfigure(self._trig_fill[name],
-                               state="hidden" if width < 2 else "normal")
-            if width >= 2:
-                set_round_rect(self, self._trig_fill[name], x1 + 4, y1 + 4,
-                               x1 + 4 + width, y2 - 4, 6)
+                               state="hidden" if width < 1 else "normal")
+            if width >= 1:
+                self.coords(self._trig_fill[name], x1 + 10, y2 - 9,
+                            x1 + 10 + width, y2 - 6)
             self.itemconfigure(self._trig_text[name],
                                text=name if raw == 0 else f"{name}  {raw}")
 
+    def _state_of(self, name: str) -> str:
+        if self._learning == name:
+            return "learn_on" if self._pulse_on else "learn_off"
+        if self._active.get(name):
+            return "active"
+        if self._highlight == name:
+            return "hover"
+        if self._assigned.get(name):
+            return "assigned"
+        return "idle"
+
     def _refresh(self) -> None:
-        for name, items in self._shapes.items():
-            base = self._base_fill.get(name)
-            if not base or not items:
-                continue
-            on = False
-            if self._learning == name:
-                fill = (theme.WARN if self._pulse_on
-                        else theme.mix(theme.WARN, theme.PANEL_HI, 0.55))
-                on = self._pulse_on
-            elif self._active.get(name):
-                fill = self._on_fill.get(name, theme.ACCENT)
-                on = True
-            elif self._highlight == name:
-                fill = theme.mix(base, theme.ACCENT, 0.40)
-            elif self._assigned.get(name):
-                fill = theme.mix(base, theme.ACCENT, 0.20)
-            else:
-                fill = base
-            for item in items:
-                self.itemconfigure(item, fill=fill)
-            for marks, normal, active in self._glyph.get(name, ()):
-                color = active if on else normal
-                for item in marks:
-                    self.itemconfigure(item, fill=color)
+        for name, part in self._parts.items():
+            state = self._state_of(name)
+            if state != part.state:
+                self._show(part, state)
+
+
+# -------------------------------------------------------------- piktogramy
+#
+# Kazdy zwraca funkcje (Paint, kolor) -> None, ktora rysuje znak na
+# kontrolce. Kolor dostaje od render_cap - inny na wcisnietej kontrolce.
+
+def _text_glyph(x: float, y: float, text: str, size: float,
+                bold: bool = False) -> Callable[[art.Paint, str], None]:
+    def draw(p: art.Paint, color: str) -> None:
+        p.text(x, y, text, size, color, bold=bold)
+    return draw
+
+
+def _arrow_glyph(x: float, y: float, direction: Tuple[int, int],
+                 size: float) -> Callable[[art.Paint, str], None]:
+    ux, uy = direction
+    px, py = -uy, ux                    # prostopadly
+    tip = (x + ux * size, y + uy * size)
+    left = (x - ux * size * 0.6 + px * size, y - uy * size * 0.6 + py * size)
+    right = (x - ux * size * 0.6 - px * size, y - uy * size * 0.6 - py * size)
+
+    def draw(p: art.Paint, color: str) -> None:
+        p.fill(("poly", (tip, left, right)), color)
+    return draw
+
+
+def _stick_ticks(x: float, y: float) -> Callable[[art.Paint, str], None]:
+    """Cztery kreski przy krawedzi wglebienia - kierunki drazka."""
+    def draw(p: art.Paint, color: str) -> None:
+        for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+            p.line([(x + dx * 29, y + dy * 29), (x + dx * 35, y + dy * 35)],
+                   color, 2.0, alpha=110)
+    return draw
+
+
+def _knob_glyph(x: float, y: float, label: str) -> Callable[[art.Paint, str], None]:
+    """Wklesla czasza galki z drobnym napisem."""
+    def draw(p: art.Paint, color: str) -> None:
+        cup = ("circle", x, y, _STICK_KNOB - 5)
+        p.gradient(cup, "#1c222b", "#3a4352")
+        p.stroke(cup, "#000000", 1.0, alpha=90)
+        p.text(x, y, label, 7, color, bold=True, alpha=200)
+    return draw
+
+
+def _view_glyph(x: float, y: float) -> Callable[[art.Paint, str], None]:
+    """Dwa nachodzace prostokaty - przycisk Back/View."""
+    def draw(p: art.Paint, color: str) -> None:
+        p.stroke(("rrect", x - 5.5, y - 4, x + 1.5, y + 2, 1.2), color, 1.4)
+        p.fill(("rrect", x - 1.5, y - 2, x + 5.5, y + 4, 1.2), color)
+    return draw
+
+
+def _menu_glyph(x: float, y: float) -> Callable[[art.Paint, str], None]:
+    """Trzy kreski - przycisk Start/Menu."""
+    def draw(p: art.Paint, color: str) -> None:
+        for dy in (-3.5, 0.0, 3.5):
+            p.line([(x - 4.5, y + dy), (x + 4.5, y + dy)], color, 1.6)
+    return draw
+
+
+def _guide_glyph(x: float, y: float) -> Callable[[art.Paint, str], None]:
+    """Pierscien z kropka - przycisk Guide (bez cudzych logo)."""
+    def draw(p: art.Paint, color: str) -> None:
+        ring = ("circle", x, y, 11)
+        p.stroke(ring, color, 2.6)
+        p.fill(("circle", x, y, 4.2), color)
+    return draw
 
 
 # ----------------------------------------------------------- lista wierszy

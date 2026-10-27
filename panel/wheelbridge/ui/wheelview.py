@@ -16,14 +16,12 @@ plyte, na ktorej leza.
 from __future__ import annotations
 
 import math
-import tkinter as tk
+from dataclasses import replace
 from typing import Dict, List, Tuple
 
 from ..config import G29_CONTROL_LABELS, G29_CONTROLS
-from . import theme
-from .padview import PadCanvas, PadView
-from .theme import Fonts
-from .widgets import round_points
+from . import art, theme
+from .padview import PadCanvas, PadView, _arrow_glyph, _text_glyph
 
 CANVAS_W, CANVAS_H = 486, 388
 CX, CY = 243.0, 178.0
@@ -49,7 +47,7 @@ _FACE_R = 9.5
 _SMALL_R = 10.0                                   # L2/L3/R2/R3
 _SMALL = {"L2": (-104.0, 28.0), "L3": (-74.0, 36.0),
           "R2": (104.0, 28.0), "R3": (74.0, 36.0)}
-_PILL = {"SHARE": (-34.0, -30.0), "OPTIONS": (34.0, -30.0)}
+_PILL = {"SHARE": (-34.0, -27.0), "OPTIONS": (34.0, -27.0)}
 _PILL_W, _PILL_H = 22.0, 10.0
 _PS = (0.0, 20.0)
 _PS_R = 11.0
@@ -63,10 +61,12 @@ _DIAL_IN = 12.0
 _ENTER_R = 9.0
 
 #: Skrzynia biegow (osobne akcesorium G29) - prawy dolny rog, poza obrecza.
-_GEARS = {"GEAR_1": (160.0, 146.0), "GEAR_3": (184.0, 146.0),
-          "GEAR_5": (208.0, 146.0), "GEAR_R": (232.0, 146.0),
-          "GEAR_2": (160.0, 194.0), "GEAR_4": (184.0, 194.0),
-          "GEAR_6": (208.0, 194.0)}
+#: Odsunieta od prawej krawedzi plotna, zeby poswiata wcisnietego biegu
+#: sie nie ucinala.
+_GEARS = {"GEAR_1": (152.0, 140.0), "GEAR_3": (176.0, 140.0),
+          "GEAR_5": (200.0, 140.0), "GEAR_R": (224.0, 140.0),
+          "GEAR_2": (152.0, 188.0), "GEAR_4": (176.0, 188.0),
+          "GEAR_6": (200.0, 188.0)}
 _GEAR_R = 9.0
 _GEAR_LABELS = {"GEAR_1": "1", "GEAR_2": "2", "GEAR_3": "3", "GEAR_4": "4",
                 "GEAR_5": "5", "GEAR_6": "6", "GEAR_R": "R"}
@@ -75,6 +75,8 @@ _GEAR_LABELS = {"GEAR_1": "1", "GEAR_2": "2", "GEAR_3": "3", "GEAR_4": "4",
 _PEDALS = (("clutch", -222.0, "SPR"), ("brake", -196.0, "HAM"),
            ("throttle", -170.0, "GAZ"))
 _PEDAL_TOP, _PEDAL_BOTTOM, _PEDAL_HALF = 126.0, 186.0, 7.0
+_PEDAL_COLORS = {"clutch": theme.WARN, "brake": theme.BAD,
+                 "throttle": theme.GOOD}
 
 FACE_COLORS = {
     "TRIANGLE": "#3fbf9f",
@@ -83,26 +85,28 @@ FACE_COLORS = {
     "SQUARE": "#d97ab8",
 }
 
-_RIM = theme.darken(theme.PANEL_HI, 0.30)
-_RIM_HI = theme.lighten(theme.PANEL_HI, 0.10)
-_PLATE_FILL = theme.lighten(theme.PANEL_HI, 0.16)
-_PLATE_EDGE = theme.lighten(theme.PANEL_HI, 0.30)
-_CAP = theme.lighten(theme.PANEL_HI, 0.30)
-_METAL = theme.mix(theme.lighten(theme.PANEL_HI, 0.42), theme.ACCENT, 0.06)
-_DIAL_FILL = "#a8323a"
+_INK = "#0b0e14"
+_RUBBER_TOP, _RUBBER_BOTTOM = "#3a4250", "#161a21"
+_PLATE_TOP, _PLATE_BOTTOM = "#4b5568", "#262d38"
+_DIAL_RED = "#b3343d"
+
+_CAP_STYLE = art.CapStyle(
+    top="#3c4555", bottom="#232a34", edge="#566279", on=theme.ACCENT,
+    glyph=theme.TEXT_DIM, glyph_on=theme.ACCENT_INK, accent=theme.ACCENT,
+    warn=theme.WARN, ink="#20160a")
+_METAL_STYLE = replace(_CAP_STYLE, top="#7d889c", bottom="#4a5465",
+                       edge="#98a3b6", glyph="#2a313c")
+_RED_STYLE = replace(_CAP_STYLE, top="#c94850", bottom="#8e252d",
+                     edge="#d9636b", glyph="#f6d4d7")
+_RED_DARK_STYLE = replace(_RED_STYLE, top="#8a2730", bottom="#5e1820",
+                          edge="#a8323a")
 
 
 def _ring_half(cx: float, cy: float, r_out: float, r_in: float,
                a0: float, a1: float, steps: int = 18) -> List[float]:
-    """Wycinek pierscienia jako wielokat (katy w stopniach, 0 = w prawo)."""
-    pts: List[float] = []
-    for i in range(steps + 1):
-        a = math.radians(a0 + (a1 - a0) * i / steps)
-        pts += [cx + r_out * math.cos(a), cy + r_out * math.sin(a)]
-    for i in range(steps, -1, -1):
-        a = math.radians(a0 + (a1 - a0) * i / steps)
-        pts += [cx + r_in * math.cos(a), cy + r_in * math.sin(a)]
-    return pts
+    """Wycinek pierscienia jako plaska lista punktow (katy w stopniach)."""
+    return [c for pt in art.ring_points(cx, cy, r_out, r_in, a0, a1, steps)
+            for c in pt]
 
 
 class WheelCanvas(PadCanvas):
@@ -113,230 +117,186 @@ class WheelCanvas(PadCanvas):
 
     # ------------------------------------------------------------ budowanie
 
-    def _build(self) -> None:
-        self._pedal_fill: Dict[str, int] = {}
-        #: piktogramy przyciskow twarzowych: (element, opcja koloru) - obrys
-        #: trojkata/kwadratu/kolka siedzi w "outline", krzyzyka w "fill"
-        self._face_glyphs: Dict[str, List[Tuple[int, str]]] = {}
-        self._build_paddles()
-        self._build_rim()
-        self._build_plate()
-        self._build_dpad()
-        self._build_face()
-        self._build_small()
-        self._build_center()
-        self._build_dial()
-        self._build_shifter()
-        self._build_pedals()
-        # znacznik obrotu na samej gorze - nie jest klikalny
-        self._angle_line = self.create_line(0, 0, 0, 0, fill=theme.ACCENT,
-                                            width=6, capstyle="round")
-        self._angle_text = self.create_text(CX, CY - 86, text="",
-                                            font=self._fonts.heading,
-                                            fill=theme.TEXT)
-        self.set_angle(0.0)
-        self._refresh()
+    def _paint_body(self, p: art.Paint) -> None:
+        # trzonki lopatek - chowaja sie za obrecza
+        for side in (-1.0, 1.0):
+            lo, hi = sorted((CX + side * 138.0, CX + side * 166.0))
+            stem = ("rrect", lo, CY - 62, hi, CY - 48, 3)
+            p.gradient(stem, "#4a5465", "#2b323e")
 
-    def _circle(self, x: float, y: float, r: float, **kw) -> int:
-        return self.create_oval(CX + x - r, CY + y - r, CX + x + r,
-                                CY + y + r, **kw)
+        # obrecz z gumy: cien, gradient, polysk i przeszycie
+        rim = ("ring", CX, CY, _RIM_OUT, _RIM_IN, -90.0, 270.0)
+        p.shadow(("circle", CX, CY, _RIM_OUT), dy=10, blur=10, alpha=170)
+        p.fill(("circle", CX, CY, _RIM_IN), theme.PANEL)
+        p.gradient(rim, _RUBBER_TOP, _RUBBER_BOTTOM)
+        p.sheen(rim, alpha=40, frac=0.35)
+        mid = (_RIM_OUT + _RIM_IN) / 2
+        for k in range(120):
+            a = math.radians(k * 3.0)
+            b = math.radians(k * 3.0 + 1.4)
+            p.line([(CX + mid * math.cos(a), CY + mid * math.sin(a)),
+                    (CX + mid * math.cos(b), CY + mid * math.sin(b))],
+                   "#ffffff", 0.9, alpha=28)
+        p.stroke(("circle", CX, CY, _RIM_OUT), "#ffffff", 1.0, alpha=30)
 
-    def _build_paddles(self) -> None:
+        # plyta z przyciskami i dolne ramie - jedna bryla
+        x1, y1, x2, y2, r = _PLATE
+        plate = ("rrect", CX + x1, CY + y1, CX + x2, CY + y2, r)
+        x1, y1, x2, y2, r = _SPOKE
+        spoke = ("rrect", CX + x1, CY + y1, CX + x2, CY + y2, r)
+        for shape in (spoke, plate):
+            p.shadow(shape, dy=6, blur=7, alpha=170)
+        top, bottom = CY + _PLATE[1], CY + _SPOKE[3]
+        for shape in (spoke, plate):
+            p.gradient(shape, _PLATE_TOP, _PLATE_BOTTOM, y0=top, y1=bottom)
+        p.sheen(plate, alpha=34, frac=0.5)
+        p.stroke(plate, "#ffffff", 1.0, alpha=30)
+        p.text(CX, CY - 10, "G29", 9, "#8a95a8", bold=True)
+
+        # wglebienia pod krzyzakiem i pokretlem
+        dx, dy = CX + _DPAD[0], CY + _DPAD[1]
+        well = ("circle", dx, dy, _DPAD_ARM + 6)
+        p.gradient(well, "#151a21", "#2a313c")
+        p.fill(("circle", dx, dy, _DPAD_GAP - 1), "#1c222b")
+        x, y = CX + _DIAL[0], CY + _DIAL[1]
+        p.fill(("circle", x, y, _DIAL_OUT + 3), "#14181f")
+
+        # skrzynia biegow: plyta i prowadnica H
+        xs = sorted({gx for gx, _gy in _GEARS.values()})
+        top_y, bottom_y = _GEARS["GEAR_1"][1], _GEARS["GEAR_2"][1]
+        gate = ("rrect", CX + xs[0] - 18, CY + top_y - 18, CX + xs[-1] + 18,
+                CY + bottom_y + 18, 14)
+        p.shadow(gate, dy=4, blur=5, alpha=150)
+        p.gradient(gate, "#2e3541", "#1b2028")
+        p.stroke(gate, "#ffffff", 1.0, alpha=24)
+        mid_y = (top_y + bottom_y) / 2
+        slot = "#0e1116"
+        p.line([(CX + xs[0], CY + mid_y), (CX + xs[-1], CY + mid_y)], slot, 4)
+        for gx in xs:
+            y_end = bottom_y if any(x0 == gx and y0 == bottom_y
+                                    for x0, y0 in _GEARS.values()) else mid_y
+            p.line([(CX + gx, CY + top_y), (CX + gx, CY + y_end)], slot, 4)
+
+        # pedaly: rowki pod paskami
+        for _key, x, _text in _PEDALS:
+            track = ("rrect", CX + x - _PEDAL_HALF, CY + _PEDAL_TOP,
+                     CX + x + _PEDAL_HALF, CY + _PEDAL_BOTTOM, _PEDAL_HALF)
+            p.gradient(track, "#0e1116", "#1d232c")
+            p.stroke(track, "#ffffff", 1.0, alpha=20)
+
+    def _build_parts(self) -> None:
+        self._angle_sprites: Dict[int, Tuple[object, Tuple[int, int]]] = {}
+
+        # lopatki
         x1, y1, x2, y2 = _PADDLE
         # _PADDLE opisuje lewa lopatke (ujemne x) - prawa to jej odbicie,
         # dlatego liczymy od wartosci bezwzglednych i strony
-        for name, side, text in (("PADDLE_L", -1.0, "L"), ("PADDLE_R", 1.0, "P")):
-            # trzonek chowa sie za obrecza - tylko optycznie laczy lopatke
-            sx = sorted((side * 140.0, side * 166.0))
-            self.create_rectangle(CX + sx[0], CY - 62, CX + sx[1], CY - 48,
-                                  fill=theme.darken(_METAL, 0.35), outline="")
+        for name, side in (("PADDLE_L", -1.0), ("PADDLE_R", 1.0)):
             lo, hi = sorted((side * abs(x1), side * abs(x2)))
-            body = self._round_rect(CX + lo, CY + y1, CX + hi, CY + y2, 12,
-                                    fill=_METAL, outline=theme.BORDER_HI,
-                                    width=1)
-            groove = self.create_line(CX + (lo + hi) / 2, CY + y1 + 12,
-                                      CX + (lo + hi) / 2, CY + y2 - 12,
-                                      fill=theme.darken(_METAL, 0.25), width=2)
-            label = self.create_text(CX + (lo + hi) / 2, CY + y2 + 12,
-                                     text=text, font=self._fonts.tiny_bold,
-                                     fill=theme.MUTED)
-            self._part(name, [body], base_fill=_METAL)
-            self._mark(name, [groove], theme.darken(_METAL, 0.25),
-                       theme.ACCENT_INK)
-            self._mark(name, [label], theme.MUTED, theme.ACCENT)
+            cx = CX + (lo + hi) / 2
+            self._add(name, ("rrect", CX + lo, CY + y1, CX + hi, CY + y2, 12),
+                      _METAL_STYLE,
+                      glyph=_groove_glyph(cx, CY + y1 + 13, CY + y2 - 13))
 
-    def _build_rim(self) -> None:
-        ro, ri = _RIM_OUT, _RIM_IN
-        self._circle(0, 6, ro + 2, fill=theme.SHADOW, outline="")     # cien
-        self._circle(0, 0, ro, fill=_RIM, outline=theme.BORDER_HI, width=1)
-        self._circle(0, 0, ro - 5, fill="", outline=_RIM_HI, width=1)
-        self._circle(0, 0, ri, fill=theme.PANEL, outline=theme.BORDER_HI,
-                     width=1)
-
-    def _build_plate(self) -> None:
-        x1, y1, x2, y2, r = _SPOKE
-        self._round_rect(CX + x1, CY + y1, CX + x2, CY + y2, r,
-                         fill=_PLATE_FILL, outline=_PLATE_EDGE, width=1)
-        x1, y1, x2, y2, r = _PLATE
-        self._round_rect(CX + x1, CY + y1, CX + x2, CY + y2, r,
-                         fill=_PLATE_FILL, outline=_PLATE_EDGE, width=1)
-        # zlaczenie plyt - dolne ramie wchodzi pod gorna bez widocznej kreski
-        sx1, _sy1, sx2, _sy2, _r = _SPOKE
-        self.create_rectangle(CX + sx1 + 1, CY + y2 - 26, CX + sx2 - 1,
-                              CY + y2 + 2, fill=_PLATE_FILL, outline="")
-        self.create_text(CX, CY - 14, text="G29", font=self._fonts.small_bold,
-                         fill=theme.MUTED)
-
-    def _build_dpad(self) -> None:
-        cx, cy = _DPAD
+        # krzyzak
+        cx, cy = CX + _DPAD[0], CY + _DPAD[1]
         a, h, g = _DPAD_ARM, _DPAD_HALF, _DPAD_GAP
-        self._circle(cx, cy, a + 6, fill=theme.darken(_PLATE_FILL, 0.18),
-                     outline="")
         arms = {
-            "DPAD_UP": ((cx - h, cy - a, cx + h, cy - g), "▲", (cx, cy - (a + g) / 2)),
-            "DPAD_DOWN": ((cx - h, cy + g, cx + h, cy + a), "▼", (cx, cy + (a + g) / 2)),
-            "DPAD_LEFT": ((cx - a, cy - h, cx - g, cy + h), "◀", (cx - (a + g) / 2, cy)),
-            "DPAD_RIGHT": ((cx + g, cy - h, cx + a, cy + h), "▶", (cx + (a + g) / 2, cy)),
+            "DPAD_UP": ((cx - h, cy - a, cx + h, cy - g), (0, -1)),
+            "DPAD_DOWN": ((cx - h, cy + g, cx + h, cy + a), (0, 1)),
+            "DPAD_LEFT": ((cx - a, cy - h, cx - g, cy + h), (-1, 0)),
+            "DPAD_RIGHT": ((cx + g, cy - h, cx + a, cy + h), (1, 0)),
         }
-        for name, ((x1, y1, x2, y2), arrow, (tx, ty)) in arms.items():
-            body = self._round_rect(CX + x1, CY + y1, CX + x2, CY + y2, 3,
-                                    fill=_CAP, outline="")
-            glyph = self.create_text(CX + tx, CY + ty, text=arrow,
-                                     font=(self._fonts.family, 6),
-                                     fill=theme.TEXT_DIM)
-            self._part(name, [body], base_fill=_CAP)
-            self._mark(name, [glyph], theme.TEXT_DIM, theme.ACCENT_INK)
+        for name, (box, direction) in arms.items():
+            mx, my = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+            self._add(name, ("rrect", *box, 3.5), _CAP_STYLE,
+                      glyph=_arrow_glyph(mx, my, direction, 3.2))
 
-    def _build_face(self) -> None:
-        cx, cy = _FACE
-        s, r = _FACE_STEP, _FACE_R
-        spots = {"TRIANGLE": (cx, cy - s), "SQUARE": (cx - s, cy),
-                 "CIRCLE": (cx + s, cy), "CROSS": (cx, cy + s)}
+        # przyciski twarzowe z piktogramami
+        fx, fy = CX + _FACE[0], CY + _FACE[1]
+        s = _FACE_STEP
+        spots = {"TRIANGLE": (fx, fy - s), "SQUARE": (fx - s, fy),
+                 "CIRCLE": (fx + s, fy), "CROSS": (fx, fy + s)}
         for name, (x, y) in spots.items():
             color = FACE_COLORS[name]
-            body = self._circle(x, y, r, fill=_CAP, outline=color, width=2)
-            px, py = CX + x, CY + y
-            if name == "TRIANGLE":
-                g = [self.create_polygon(px, py - 5, px + 5, py + 4, px - 5,
-                                         py + 4, fill="", outline=color,
-                                         width=1.6)]
-            elif name == "SQUARE":
-                g = [self.create_rectangle(px - 4, py - 4, px + 4, py + 4,
-                                           outline=color, width=1.6)]
-            elif name == "CIRCLE":
-                g = [self.create_oval(px - 4.5, py - 4.5, px + 4.5, py + 4.5,
-                                      outline=color, width=1.6)]
-            else:
-                g = [self.create_line(px - 4, py - 4, px + 4, py + 4,
-                                      fill=color, width=1.6),
-                     self.create_line(px - 4, py + 4, px + 4, py - 4,
-                                      fill=color, width=1.6)]
-            self._part(name, [body], base_fill=_CAP, on_fill=color)
-            self._face_glyphs[name] = [
-                (item, "fill" if self.type(item) == "line" else "outline")
-                for item in g]
+            style = replace(_CAP_STYLE, top="#2f3642", bottom="#1c2129",
+                            edge=art.mix("#3e4859", color, 0.4), on=color,
+                            glyph=color, glyph_on=_INK)
+            self._add(name, ("circle", x, y, _FACE_R), style,
+                      glyph=_face_glyph(name, x, y))
 
-    def _build_small(self) -> None:
+        # L2/L3/R2/R3
         for name, (x, y) in _SMALL.items():
-            body = self._circle(x, y, _SMALL_R, fill=_CAP,
-                                outline=theme.BORDER_HI, width=1)
-            label = self.create_text(CX + x, CY + y, text=name,
-                                     font=(self._fonts.family, 7, "bold"),
-                                     fill=theme.TEXT_DIM)
-            self._part(name, [body], base_fill=_CAP)
-            self._mark(name, [label], theme.TEXT_DIM, theme.ACCENT_INK)
+            self._add(name, ("circle", CX + x, CY + y, _SMALL_R), _CAP_STYLE,
+                      glyph=_text_glyph(CX + x, CY + y, name, 6.5, bold=True))
 
-    def _build_center(self) -> None:
+        # Share / Options / PS
         for name, (x, y) in _PILL.items():
-            w, h = _PILL_W / 2, _PILL_H / 2
-            body = self._round_rect(CX + x - w, CY + y - h, CX + x + w,
-                                    CY + y + h, h, fill=_CAP, outline="")
-            label = self.create_text(CX + x, CY + y - h - 7,
-                                     text=G29_CONTROL_LABELS[name].upper(),
-                                     font=(self._fonts.family, 6, "bold"),
-                                     fill=theme.MUTED)
-            self._part(name, [body], base_fill=_CAP)
-            self._mark(name, [label], theme.MUTED, theme.ACCENT)
+            w, ph = _PILL_W / 2, _PILL_H / 2
+            self._add(name, ("rrect", CX + x - w, CY + y - ph, CX + x + w,
+                             CY + y + ph, ph), _CAP_STYLE)
         x, y = _PS
-        body = self._circle(x, y, _PS_R, fill=theme.darken(_PLATE_FILL, 0.35),
-                            outline=theme.BORDER_HI, width=1)
-        label = self.create_text(CX + x, CY + y, text="PS",
-                                 font=(self._fonts.family, 7, "bold"),
-                                 fill=theme.TEXT_DIM)
-        self._part("PS", [body], base_fill=theme.darken(_PLATE_FILL, 0.35))
-        self._mark("PS", [label], theme.TEXT_DIM, theme.ACCENT_INK)
+        self._add("PS", ("circle", CX + x, CY + y, _PS_R),
+                  replace(_CAP_STYLE, top="#2a313c", bottom="#171b22"),
+                  glyph=_text_glyph(CX + x, CY + y, "PS", 7, bold=True))
 
-    def _build_dial(self) -> None:
+        # plus, minus, pokretlo i Enter
         for name, (x, y), text in (("PLUS", _PLUS, "+"), ("MINUS", _MINUS, "−")):
-            body = self._circle(x, y, _PM_R, fill=_CAP,
-                                outline=theme.BORDER_HI, width=1)
-            label = self.create_text(CX + x, CY + y - 1, text=text,
-                                     font=(self._fonts.family, 9, "bold"),
-                                     fill=theme.TEXT_DIM)
-            self._part(name, [body], base_fill=_CAP)
-            self._mark(name, [label], theme.TEXT_DIM, theme.ACCENT_INK)
-
-        x, y = _DIAL
-        px, py = CX + x, CY + y
+            self._add(name, ("circle", CX + x, CY + y, _PM_R), _CAP_STYLE,
+                      glyph=_text_glyph(CX + x, CY + y - 0.5, text, 9, bold=True))
+        x, y = CX + _DIAL[0], CY + _DIAL[1]
         # dwie polowki pokretla: prawa = obrot w prawo, lewa = w lewo;
         # 4 stopnie przerwy, zeby bylo widac, ze to dwa osobne gniazda
         for name, a0, a1 in (("DIAL_CW", -88.0, 88.0),
                              ("DIAL_CCW", 92.0, 268.0)):
-            body = self.create_polygon(
-                _ring_half(px, py, _DIAL_OUT, _DIAL_IN, a0, a1),
-                fill=_DIAL_FILL, outline="")
-            arrow = self.create_text(
-                px + (17 if name == "DIAL_CW" else -17), py,
-                text="›" if name == "DIAL_CW" else "‹",
-                font=(self._fonts.family, 9, "bold"), fill="#f3c9cc")
-            self._part(name, [body], base_fill=_DIAL_FILL)
-            self._mark(name, [arrow], "#f3c9cc", theme.ACCENT_INK)
-        body = self._circle(x, y, _ENTER_R, fill=theme.darken(_DIAL_FILL, 0.30),
-                            outline="")
-        dot = self._circle(x, y, 2.5, fill="#f3c9cc", outline="")
-        self._part("ENTER", [body], base_fill=theme.darken(_DIAL_FILL, 0.30))
-        self._mark("ENTER", [dot], "#f3c9cc", theme.ACCENT_INK)
+            ax = x + (17 if name == "DIAL_CW" else -17)
+            self._add(name, ("ring", x, y, _DIAL_OUT, _DIAL_IN, a0, a1),
+                      _RED_STYLE,
+                      glyph=_text_glyph(ax, y - 0.5,
+                                        "›" if name == "DIAL_CW" else "‹",
+                                        9, bold=True))
+        self._add("ENTER", ("circle", x, y, _ENTER_R), _RED_DARK_STYLE,
+                  glyph=_dot_glyph(x, y, 2.6))
 
-    def _build_shifter(self) -> None:
+        # biegi
+        for name, (gx, gy) in _GEARS.items():
+            self._add(name, ("circle", CX + gx, CY + gy, _GEAR_R), _METAL_STYLE,
+                      glyph=_text_glyph(CX + gx, CY + gy, _GEAR_LABELS[name],
+                                        7.5, bold=True))
+
+    def _build_overlay(self) -> None:
+        f = self._fonts
+        x1, _y1, x2, y2 = _PADDLE
+        for side, text in ((-1.0, "L"), (1.0, "P")):
+            lo, hi = sorted((side * abs(x1), side * abs(x2)))
+            self.create_text(CX + (lo + hi) / 2, CY + y2 + 13, text=text,
+                             font=f.tiny_bold, fill=theme.MUTED)
+        for name, (x, y) in _PILL.items():
+            self.create_text(CX + x, CY + y - _PILL_H / 2 - 6,
+                             text=G29_CONTROL_LABELS[name].upper(),
+                             font=(f.family, 6, "bold"), fill=theme.MUTED)
         xs = sorted({x for x, _y in _GEARS.values()})
-        top, bottom = _GEARS["GEAR_1"][1], _GEARS["GEAR_2"][1]
-        mid = (top + bottom) / 2
-        line = theme.darken(theme.BORDER_HI, 0.1)
-        self.create_line(CX + xs[0], CY + mid, CX + xs[-1], CY + mid,
-                         fill=line, width=3)
-        for x in xs:
-            y_end = bottom if any(gx == x and gy == bottom
-                                  for gx, gy in _GEARS.values()) else mid
-            self.create_line(CX + x, CY + top, CX + x, CY + y_end,
-                             fill=line, width=3)
-        self.create_text(CX + (xs[0] + xs[-1]) / 2, CY + top - 22,
-                         text="SKRZYNIA", font=self._fonts.tiny_bold,
-                         fill=theme.MUTED)
-        for name, (x, y) in _GEARS.items():
-            body = self._circle(x, y, _GEAR_R, fill=_CAP,
-                                outline=theme.BORDER_HI, width=1)
-            label = self.create_text(CX + x, CY + y, text=_GEAR_LABELS[name],
-                                     font=(self._fonts.family, 7, "bold"),
-                                     fill=theme.TEXT_DIM)
-            self._part(name, [body], base_fill=_CAP)
-            self._mark(name, [label], theme.TEXT_DIM, theme.ACCENT_INK)
+        self.create_text(CX + (xs[0] + xs[-1]) / 2,
+                         CY + _GEARS["GEAR_1"][1] - 30, text="SKRZYNIA",
+                         font=f.tiny_bold, fill=theme.MUTED)
 
-    def _build_pedals(self) -> None:
-        h = _PEDAL_HALF
+        self._pedal_fill: Dict[str, int] = {}
+        h = _PEDAL_HALF - 2
         for key, x, text in _PEDALS:
-            self._round_rect(CX + x - h, CY + _PEDAL_TOP, CX + x + h,
-                             CY + _PEDAL_BOTTOM, 5, fill=theme.TRACK,
-                             outline="")
-            self._pedal_fill[key] = self._round_rect(
-                CX + x - h, CY + _PEDAL_BOTTOM - 2, CX + x + h,
-                CY + _PEDAL_BOTTOM, 5, fill=theme.ACCENT, outline="",
+            self._pedal_fill[key] = self.create_rectangle(
+                CX + x - h, CY + _PEDAL_BOTTOM - 3, CX + x + h,
+                CY + _PEDAL_BOTTOM - 3, fill=_PEDAL_COLORS[key], outline="",
                 state="hidden")
-            self.create_text(CX + x, CY + _PEDAL_BOTTOM + 11, text=text,
-                             font=(self._fonts.family, 6, "bold"),
-                             fill=theme.MUTED)
-        self.create_text(CX + _PEDALS[1][1], CY + _PEDAL_TOP - 22,
-                         text="PEDAŁY", font=self._fonts.tiny_bold,
-                         fill=theme.MUTED)
+            self.create_text(CX + x, CY + _PEDAL_BOTTOM + 12, text=text,
+                             font=(f.family, 6, "bold"), fill=theme.MUTED)
+        self.create_text(CX + _PEDALS[1][1], CY + _PEDAL_TOP - 16,
+                         text="PEDAŁY", font=f.tiny_bold, fill=theme.MUTED)
+
+        # znacznik obrotu na obreczy i odczyt kata - nie sa klikalne
+        self._angle_item = self.create_image(0, 0, anchor="nw")
+        self._angle_text = self.create_text(CX, CY - 84, text="",
+                                            font=f.heading, fill=theme.TEXT)
+        self.set_angle(0.0)
 
     # ---------------------------------------------------------------- stan
 
@@ -346,18 +306,36 @@ class WheelCanvas(PadCanvas):
         if self._angle_shown is not None and abs(deg - self._angle_shown) < 0.05:
             return
         self._angle_shown = deg
-        a = math.radians(-90.0 + deg)
-        r1, r2 = _RIM_IN + 3, _RIM_OUT - 3
-        self.coords(self._angle_line,
-                    CX + r1 * math.cos(a), CY + r1 * math.sin(a),
-                    CX + r2 * math.cos(a), CY + r2 * math.sin(a))
+        key = int(round(deg)) % 360
+        sprite = self._angle_sprites.get(key)
+        if sprite is None:
+            sprite = self._angle_sprite(key)
+            self._angle_sprites[key] = sprite
+        image, (x, y) = sprite
+        self.itemconfigure(self._angle_item, image=image)
+        self.coords(self._angle_item, x, y)
         text = f"{deg:+.0f}°"
         if self.itemcget(self._angle_text, "text") != text:
             self.itemconfigure(self._angle_text, text=text)
 
+    def _angle_sprite(self, deg: int):
+        """Kreska akcentu na obreczy - jak pasek na gorze prawdziwego kola."""
+        a = math.radians(-90.0 + deg)
+        r1, r2 = _RIM_IN + 4, _RIM_OUT - 4
+        pts = [(CX + r1 * math.cos(a), CY + r1 * math.sin(a)),
+               (CX + r2 * math.cos(a), CY + r2 * math.sin(a))]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        ox, oy = math.floor(min(xs) - 10), math.floor(min(ys) - 10)
+        p = art.Paint(math.ceil(max(xs) + 10) - ox, math.ceil(max(ys) + 10) - oy,
+                      (ox, oy))
+        p.line(pts, theme.ACCENT, 9, alpha=70)
+        p.line(pts, theme.ACCENT, 5.5)
+        return art.photo(p.image(), self), (ox, oy)
+
     def set_pedals(self, values: Dict[str, float]) -> None:
-        h = _PEDAL_HALF
-        span = _PEDAL_BOTTOM - _PEDAL_TOP
+        h = _PEDAL_HALF - 2
+        span = _PEDAL_BOTTOM - _PEDAL_TOP - 6
         shown = self._pedals_shown
         for key, x, _text in _PEDALS:
             v = values.get(key, 0.0)
@@ -366,26 +344,43 @@ class WheelCanvas(PadCanvas):
                 continue
             shown[key] = v
             item = self._pedal_fill[key]
-            if v * span < 3:
+            if v * span < 2:
                 self.itemconfigure(item, state="hidden")
                 continue
-            self.coords(item, *round_points(CX + x - h, CY + _PEDAL_BOTTOM - v * span,
-                                            CX + x + h, CY + _PEDAL_BOTTOM, 5))
+            self.coords(item, CX + x - h, CY + _PEDAL_BOTTOM - 3 - v * span,
+                        CX + x + h, CY + _PEDAL_BOTTOM - 3)
             self.itemconfigure(item, state="normal")
 
-    def _refresh(self) -> None:
-        super()._refresh()
-        # Piktogramy przyciskow twarzowych maja kolor w roznych opcjach
-        # (obrys albo wypelnienie), wiec nie obsluguje ich _mark z PadCanvas.
-        # Ta sama logika "wlaczenia" co w PadCanvas._refresh.
-        for name, items in getattr(self, "_face_glyphs", {}).items():
-            if self._learning == name:
-                on = self._pulse_on
-            else:
-                on = self._active.get(name, False)
-            color = theme.ACCENT_INK if on else FACE_COLORS[name]
-            for item, key in items:
-                self.itemconfigure(item, **{key: color})
+
+# -------------------------------------------------------------- piktogramy
+
+def _groove_glyph(x: float, y1: float, y2: float):
+    def draw(p: art.Paint, color: str) -> None:
+        p.line([(x, y1), (x, y2)], color, 2.2, alpha=150)
+    return draw
+
+
+def _dot_glyph(x: float, y: float, r: float):
+    def draw(p: art.Paint, color: str) -> None:
+        p.fill(("circle", x, y, r), color)
+    return draw
+
+
+def _face_glyph(name: str, x: float, y: float):
+    """Trojkat, kwadrat, kolko albo krzyzyk - rysowane, nie z czcionki."""
+    def draw(p: art.Paint, color: str) -> None:
+        if name == "TRIANGLE":
+            pts = ((x, y - 5.2), (x + 5.2, y + 3.8), (x - 5.2, y + 3.8))
+            p.line(list(pts) + [pts[0]], color, 1.5)
+        elif name == "SQUARE":
+            p.stroke(("rrect", x - 4.3, y - 4.3, x + 4.3, y + 4.3, 0.8),
+                     color, 1.5)
+        elif name == "CIRCLE":
+            p.stroke(("circle", x, y, 4.8), color, 1.5)
+        else:
+            p.line([(x - 4.2, y - 4.2), (x + 4.2, y + 4.2)], color, 1.5)
+            p.line([(x - 4.2, y + 4.2), (x + 4.2, y - 4.2)], color, 1.5)
+    return draw
 
 
 # ------------------------------------------------------------------ widok

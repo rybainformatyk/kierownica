@@ -25,7 +25,7 @@ from ..config import (DEFAULT_PAD_BUTTONS, G29_CONTROL_LABELS, G29_CONTROLS,
 from ..processing import build_g29_report, g29_active
 from . import theme
 from .wheelview import WIZARD_ORDER, WheelView
-from .widgets import Card
+from .widgets import Card, round_corners
 
 if TYPE_CHECKING:                       # tylko dla podpowiedzi typow
     from .app import PanelApp
@@ -66,6 +66,7 @@ class G29Tab:
         strip = tk.Frame(parent, bg=theme.PANEL, highlightthickness=1,
                          highlightbackground=theme.BORDER)
         strip.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        round_corners(strip, theme.PANEL)
         bar = tk.Frame(strip, bg=theme.PANEL)
         bar.pack(fill="x", padx=15, pady=9)
         tick = tk.Frame(bar, bg=theme.ACCENT, width=3, height=13)
