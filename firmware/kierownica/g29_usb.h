@@ -23,7 +23,8 @@
  *    bajty 9-11  pole producenta (drazek skrzyni, flagi)
  *
  *  Deskryptor raportu pochodzi z projektu lgff_wheel_adapter
- *  (github.com/sonik-br/lgff_wheel_adapter, usb_descriptors.h). Zgadza sie
+ *  (github.com/sonik-br/lgff_wheel_adapter, usb_descriptors.h, licencja
+ *  GPL-3.0). Zgadza sie
  *  z parserem G29 w SDL3 (SDL_hidapi_lg4ff.c: raport 12 B, kierownica w
  *  bajtach 4-5, pedaly w 6-8) i z zapisem sterownika Logitecha (17-bajtowy
  *  zapis = numer raportu + 16 B wyjscia).

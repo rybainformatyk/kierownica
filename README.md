@@ -62,10 +62,19 @@ w [panel/README.md](panel/README.md).
 | Przyciski 1–31 | 22–52 |
 | Mostek H do FFB (opcjonalnie) | 5 (EN), 6 (RPWM), 7 (LPWM) |
 
-## Licencje zewnętrzne
+## Licencja
 
-`panel/vigem/ViGEmClient.dll` pochodzi z pakietu
-[vgamepad](https://pypi.org/project/vgamepad/) (licencja MIT, treść
-w `panel/vigem/LICENSE-vgamepad.txt`). Deskryptor raportu G29
-w `g29_usb.h` jest oparty na projekcie
-[lgff_wheel_adapter](https://github.com/sonik-br/lgff_wheel_adapter).
+Projekt jest na licencji [MIT](LICENSE): możesz go używać, zmieniać i
+rozpowszechniać, także komercyjnie, pod warunkiem zachowania informacji
+o autorze i treści licencji.
+
+### Fragmenty z innych projektów
+
+* `panel/vigem/ViGEmClient.dll` pochodzi z pakietu
+  [vgamepad](https://pypi.org/project/vgamepad/) (licencja MIT, treść
+  w `panel/vigem/LICENSE-vgamepad.txt`).
+* Deskryptor raportu G29 w `firmware/kierownica/g29_usb.h` (opis
+  oryginalnego urządzenia Logitech G29, potrzebny do zgodności z grami)
+  pochodzi z projektu
+  [lgff_wheel_adapter](https://github.com/sonik-br/lgff_wheel_adapter),
+  który jest na licencji GPL-3.0.
