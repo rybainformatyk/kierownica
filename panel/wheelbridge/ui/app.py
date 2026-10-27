@@ -35,7 +35,7 @@ from .widgets import (BarMeter, ButtonGrid, Card, HatIndicator, LabeledSlider,
                       TorqueMeter, WheelDial)
 
 APP_TITLE = "Panel kierownicy"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1"
 VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
 
 RANGE_PRESETS = (120, 270, 360, 540, 720, 900, 1080)
