@@ -1,0 +1,9 @@
+* text=auto
+
+# Skrypty Windows musza miec CRLF, inaczej cmd potrafi zgubic etykiety
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.dll binary
+*.png binary

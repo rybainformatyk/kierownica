@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Ustawienia uzytkownika - aplikacja tworzy je sama przy pierwszym starcie
+panel/config.json
+
+# Stare wersje i proby - tylko lokalnie
+_archiwum/
+
+# Edytory i system
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Arduino / KiCad
+build/
+*-backups/
+.history/
+*.kicad_prl
+fp-info-cache
+
+# Nextcloud
+*conflicted copy*
+.sync_*.db*
+.owncloudsync.log*
