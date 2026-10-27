@@ -39,6 +39,20 @@ def set_round_rect(canvas: tk.Canvas, item: int, x1: float, y1: float,
     canvas.coords(item, *round_points(x1, y1, x2, y2, r))
 
 
+def configure_if_changed(widget: tk.Misc, **options) -> None:
+    """configure() tylko z opcjami, ktore naprawde sie zmienily.
+
+    Kazde configure to przerysowanie widgetu, a zmiana tekstu - takze
+    przeliczenie ukladu calego okna. Odswiezanie 60 razy na sekunde tych
+    samych napisow dawalo zauwazalne przyciecia. Porownujemy z cget, nie z
+    wlasna pamiecia: napis moze zmienic tez inny fragment kodu.
+    """
+    changed = {k: v for k, v in options.items()
+               if str(widget.cget(k)) != str(v)}
+    if changed:
+        widget.configure(**changed)
+
+
 # -------------------------------------------------------------------- karta
 
 class Card(ttk.Frame):
@@ -91,31 +105,49 @@ class Card(ttk.Frame):
 
 
 class TabBar(tk.Frame):
-    """Wlasny pasek zakladek - podkreslenie zamiast ramek ttk."""
+    """Wlasny pasek zakladek - ikona, napis i podkreslenie zamiast ramek ttk.
+
+    icons: znaki z czcionki ikon Windows (fonts.icons); bez tej czcionki
+    pasek pokazuje same napisy.
+    """
 
     def __init__(self, master: tk.Misc, fonts: Fonts, labels: Sequence[str],
-                 command: Callable[[int], None]) -> None:
+                 command: Callable[[int], None],
+                 icons: Sequence[str] = ()) -> None:
         super().__init__(master, bg=theme.BG)
         self._command = command
         self._selected = 0
         self._labels: List[tk.Label] = []
+        self._icons: List[Optional[tk.Label]] = []
         self._marks: List[tk.Frame] = []
         self._hover = -1
 
         for index, text in enumerate(labels):
             item = tk.Frame(self, bg=theme.BG, cursor="hand2")
             item.pack(side="left")
-            label = tk.Label(item, text=text, bg=theme.BG, fg=theme.MUTED,
-                             font=fonts.small_bold, padx=17, pady=9,
-                             cursor="hand2")
-            label.pack(fill="x")
+            row = tk.Frame(item, bg=theme.BG, cursor="hand2")
+            row.pack(padx=14, pady=(8, 9))
+            glyph = icons[index] if index < len(icons) else ""
+            icon = None
+            if glyph and fonts.icons:
+                icon = tk.Label(row, text=glyph, bg=theme.BG, fg=theme.MUTED,
+                                font=(fonts.icons, 11), cursor="hand2", bd=0,
+                                padx=0, pady=0)
+                icon.pack(side="left", padx=(0, 7))
+            label = tk.Label(row, text=text, bg=theme.BG, fg=theme.MUTED,
+                             font=fonts.small_bold, cursor="hand2", bd=0,
+                             padx=0, pady=0)
+            label.pack(side="left")
             mark = tk.Frame(item, bg=theme.BG, height=2)
-            mark.pack(fill="x")
-            for widget in (item, label):
+            mark.pack(fill="x", padx=6)
+            for widget in (item, row, label, icon):
+                if widget is None:
+                    continue
                 widget.bind("<Button-1>", lambda _e, i=index: self._click(i))
                 widget.bind("<Enter>", lambda _e, i=index: self._set_hover(i))
                 widget.bind("<Leave>", lambda _e, i=index: self._set_hover(-1))
             self._labels.append(label)
+            self._icons.append(icon)
             self._marks.append(mark)
 
         self._paint()
@@ -134,14 +166,85 @@ class TabBar(tk.Frame):
             self._paint()
 
     def _paint(self) -> None:
-        for i, (label, mark) in enumerate(zip(self._labels, self._marks)):
+        for i, (label, icon, mark) in enumerate(zip(self._labels, self._icons,
+                                                    self._marks)):
             if i == self._selected:
-                label.configure(fg=theme.TEXT)
-                mark.configure(bg=theme.ACCENT)
+                fg, icon_fg, line = theme.TEXT, theme.ACCENT, theme.ACCENT
             else:
-                label.configure(fg=theme.TEXT_DIM if i == self._hover
-                                else theme.MUTED)
-                mark.configure(bg=theme.BG)
+                fg = theme.TEXT_DIM if i == self._hover else theme.MUTED
+                icon_fg, line = fg, theme.BG
+            configure_if_changed(label, fg=fg)
+            if icon is not None:
+                configure_if_changed(icon, fg=icon_fg)
+            configure_if_changed(mark, bg=line)
+
+
+class Pages(tk.Frame):
+    """Strony zakladek ulozone w stos - zamiennik ttk.Notebook.
+
+    Notebook przy zmianie zakladki chowa stara strone i od nowa pokazuje
+    nowa, a na Windowsie kazda kontrolka Tk to osobne okno systemowe:
+    przelaczenie ciezkiej zakladki trwalo do 300 ms. Tu wszystkie strony
+    sa pokazane caly czas, jedna nad druga, a zmiana zakladki tylko
+    podnosi wybrana na wierzch.
+
+    API jak w Notebook: add, select, index, tabs i zdarzenie
+    <<NotebookTabChanged>>.
+    """
+
+    def __init__(self, master: tk.Misc, bg: str = theme.BG) -> None:
+        super().__init__(master, bg=bg, bd=0, highlightthickness=0)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self._pages: List[tk.Misc] = []
+        self._current = -1
+
+    def add(self, page: tk.Misc, text: str = "") -> None:
+        page.grid(row=0, column=0, sticky="nsew", in_=self)
+        self._pages.append(page)
+        if self._current < 0:
+            self._current = 0
+        # nowa strona laduje na wierzchu - wybrana ma tam zostac
+        self._pages[self._current].tkraise()
+
+    def tabs(self) -> Tuple[str, ...]:
+        return tuple(str(p) for p in self._pages)
+
+    def index(self, tab_id) -> int:
+        if isinstance(tab_id, int):
+            if not 0 <= tab_id < len(self._pages):
+                raise tk.TclError(f"błędny indeks strony: {tab_id}")
+            return tab_id
+        if tab_id == "current":
+            return self._current
+        if tab_id == "end":
+            return len(self._pages)
+        name = str(tab_id)
+        for i, page in enumerate(self._pages):
+            if str(page) == name:
+                return i
+        raise tk.TclError(f"nie ma takiej strony: {name}")
+
+    def select(self, tab_id=None):
+        """Bez argumentu - sciezka wybranej strony, jak w Notebook."""
+        if tab_id is None:
+            return str(self._pages[self._current]) if self._pages else ""
+        index = self.index(tab_id)
+        if index == self._current:
+            return None
+        old = self._pages[self._current]
+        self._current = index
+        self._pages[index].tkraise()
+        # Fokus z zaslonietej strony przechodzi na stos: inaczej klawisze
+        # trafialyby do niewidocznego pola.
+        try:
+            focus = self.focus_get()
+        except (KeyError, tk.TclError):     # np. rozwinieta lista comboboxa
+            focus = None
+        if focus is not None and str(focus).startswith(str(old) + "."):
+            self.focus_set()
+        self.event_generate("<<NotebookTabChanged>>")
+        return None
 
 
 class StatusDot(tk.Canvas):
@@ -151,6 +254,7 @@ class StatusDot(tk.Canvas):
         super().__init__(master, width=size, height=size, bg=bg,
                          highlightthickness=0, bd=0)
         self._size = size
+        self._shown: Optional[Tuple[str, bool]] = None
         pad = max(2, size // 5)
         self._glow = self.create_oval(0, 0, size, size, fill="", outline="")
         self._ring = self.create_oval(pad - 1, pad - 1, size - pad + 1,
@@ -159,6 +263,9 @@ class StatusDot(tk.Canvas):
                                      fill=theme.MUTED, outline="")
 
     def set(self, color: str, glow: bool = True) -> None:
+        if self._shown == (color, glow):
+            return
+        self._shown = (color, glow)
         bg = self.cget("bg")
         self.itemconfigure(self._dot, fill=color)
         self.itemconfigure(self._glow,
@@ -168,11 +275,17 @@ class StatusDot(tk.Canvas):
 
 
 class WheelDial(tk.Canvas):
-    """Duzy wskaznik kata obrotu kierownicy z grafika kola."""
+    """Duzy wskaznik kata obrotu kierownicy z grafika kola.
+
+    Odczyt kata stoi pod pierscieniem, a nie na kole - wczesniej ramka z
+    liczba i napis zakresu zaslanialy szprychy i wskazowke.
+    """
+
+    READOUT_H = 62              # pas pod pierscieniem na odczyt
 
     def __init__(self, master: tk.Misc, fonts: Fonts, size: int = 250) -> None:
-        super().__init__(master, width=size, height=size, bg=theme.PANEL,
-                         highlightthickness=0, bd=0)
+        super().__init__(master, width=size, height=size + self.READOUT_H,
+                         bg=theme.PANEL, highlightthickness=0, bd=0)
         self._fonts = fonts
         self._size = size
         self._range = 900.0
@@ -216,47 +329,38 @@ class WheelDial(tk.Canvas):
                             cx + 5, cy - r_out - 9,
                             fill=theme.MUTED, outline="")
 
-        # kolo kierownicy
+        # kolo kierownicy: obrecz, plyta z dwoma ramionami i dolna szprycha
         wheel_r = r_in - 20
         self._wheel_r = wheel_r
         self._cx, self._cy = cx, cy
-        rim_w = max(5, s // 34)
-        # felga z dwoch okregow - ciemniejszy spod i jasniejsza krawedz
+        rim_w = max(6, s // 30)
         self.create_oval(cx - wheel_r, cy - wheel_r, cx + wheel_r, cy + wheel_r,
-                         outline=theme.darken(theme.PANEL_HI, 0.35),
-                         width=rim_w + 3, fill="")
+                         outline=theme.darken(theme.PANEL_HI, 0.45),
+                         width=rim_w + 4, fill="")
         self.create_oval(cx - wheel_r, cy - wheel_r, cx + wheel_r, cy + wheel_r,
-                         outline=theme.mix(theme.PANEL_HI, theme.TEXT, 0.22),
+                         outline=theme.mix(theme.PANEL_HI, theme.TEXT, 0.20),
                          width=rim_w, fill="")
         self._spokes: List[int] = []
         for _ in range(3):
             self._spokes.append(self.create_line(
-                cx, cy, cx, cy, fill=theme.mix(theme.PANEL_HI, theme.TEXT, 0.14),
-                width=rim_w, capstyle="round"))
-        hub_r = max(10, s // 22)
-        self._hub_ring = self.create_oval(cx - hub_r - 3, cy - hub_r - 3,
-                                          cx + hub_r + 3, cy + hub_r + 3,
+                cx, cy, cx, cy, fill=theme.mix(theme.PANEL_HI, theme.TEXT, 0.12),
+                width=rim_w + 2, capstyle="round"))
+        hub_r = max(14, s // 14)
+        self._hub_ring = self.create_oval(cx - hub_r - 4, cy - hub_r - 4,
+                                          cx + hub_r + 4, cy + hub_r + 4,
                                           fill=theme.PANEL_HI, outline="")
         self._hub = self.create_oval(cx - hub_r, cy - hub_r, cx + hub_r,
                                      cy + hub_r, fill=theme.PANEL,
                                      outline=theme.ACCENT_DIM, width=2)
+        # znacznik "gora kierownicy" na obreczy - jak pasek na prawdziwym kole
         self._marker = self.create_line(cx, cy, cx, cy, fill=theme.ACCENT,
-                                        width=4, capstyle="round")
+                                        width=rim_w + 1, capstyle="round")
 
-        # Odczyt kata na wlasnym tle: wskazowka i szprychy przechodza pod
-        # nim, wiec liczba jest czytelna w kazdym polozeniu kierownicy.
-        ry = cy + wheel_r * 0.50
-        round_rect(self, cx - 68, ry - 28, cx + 68, ry + 30, 14,
-                   fill=theme.mix(theme.PANEL, theme.BG, 0.5),
-                   outline=theme.BORDER)
-        self._text = self.create_text(cx, ry - 5, text="0",
+        # odczyt pod pierscieniem - nic go nie zaslania
+        ry = s + 6
+        self._text = self.create_text(cx, ry + 16, text="0°",
                                       font=self._fonts.big, fill=theme.TEXT)
-        self._unit = self.create_text(cx, ry + 19, text="stopni",
-                                      font=self._fonts.tiny, fill=theme.MUTED)
-        gy = cy - wheel_r * 0.62
-        round_rect(self, cx - 56, gy - 11, cx + 56, gy + 11, 10,
-                   fill=theme.PANEL, outline="")
-        self._range_text = self.create_text(cx, gy, text="zakres 900 st.",
+        self._range_text = self.create_text(cx, ry + 46, text="zakres 900°",
                                             font=self._fonts.small,
                                             fill=theme.MUTED)
         self._items_built = True
@@ -269,7 +373,7 @@ class WheelDial(tk.Canvas):
         if abs(degrees - self._range) < 0.5:
             return
         self._range = degrees
-        self.itemconfigure(self._range_text, text=f"zakres {int(degrees)} st.")
+        self.itemconfigure(self._range_text, text=f"zakres {int(degrees)}°")
         self._redraw()
 
     def set_angle(self, degrees: float) -> None:
@@ -292,22 +396,24 @@ class WheelDial(tk.Canvas):
         color = theme.BAD if over else theme.mix(theme.ACCENT, theme.WARN, near)
         self.itemconfigure(self._arc, extent=-frac * 180.0, outline=color)
 
-        # obrot kola
+        # obrot kola: ramiona w lewo i w prawo, szprycha w dol
         cx, cy, r = self._cx, self._cy, self._wheel_r
         base = math.radians(-self._deg)
-        for i, spoke in enumerate(self._spokes):
-            a = base + math.radians(90 + i * 120)
+        for spoke, deg in zip(self._spokes, (0, 180, 270)):
+            a = base + math.radians(deg)
             self.coords(spoke, cx, cy,
                         cx + r * math.cos(a), cy - r * math.sin(a))
         a0 = base + math.radians(90)
-        self.coords(self._marker, cx, cy,
-                    cx + r * 0.92 * math.cos(a0), cy - r * 0.92 * math.sin(a0))
+        c, s = math.cos(a0), math.sin(a0)
+        self.coords(self._marker, cx + r * 0.88 * c, cy - r * 0.88 * s,
+                    cx + r * 1.04 * c, cy - r * 1.04 * s)
         self.itemconfigure(self._marker, fill=color)
         self.itemconfigure(self._hub, outline=theme.mix(theme.ACCENT_DIM,
                                                         color, 0.5))
 
-        text = "0" if abs(self._deg) < 0.5 else f"{self._deg:+.0f}"
-        self.itemconfigure(self._text, text=text)
+        text = "0°" if abs(self._deg) < 0.5 else f"{self._deg:+.0f}°"
+        self.itemconfigure(self._text, text=text,
+                           fill=theme.BAD if over else theme.TEXT)
 
 
 class BarMeter(tk.Frame):
@@ -328,14 +434,17 @@ class BarMeter(tk.Frame):
         top.pack(fill="x")
         tk.Label(top, text=label, bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=fonts.small).pack(side="left")
+        # Stala szerokosc: "5 %" i "100 %" maja rozna dlugosc, a kazda zmiana
+        # rozmiaru napisu przeliczala uklad calej karty.
         self._pct = tk.Label(top, text="0 %", bg=theme.PANEL, fg=theme.TEXT,
-                             font=fonts.bold)
+                             font=fonts.bold, width=6, anchor="e")
         self._pct.pack(side="right")
         self._raw = None
+        self._raw_value: Optional[int] = None
         if show_raw:
             self._raw = tk.Label(top, text="", bg=theme.PANEL, fg=theme.MUTED,
-                                 font=fonts.mono_small)
-            self._raw.pack(side="right", padx=(0, 10))
+                                 font=fonts.mono_small, width=5, anchor="e")
+            self._raw.pack(side="right", padx=(0, 6))
 
         self._canvas = tk.Canvas(self, width=width, height=height, bg=theme.PANEL,
                                  highlightthickness=0, bd=0)
@@ -343,12 +452,16 @@ class BarMeter(tk.Frame):
         self._radius = height / 2.0
         self._track = round_rect(self._canvas, 0, 0, width, height,
                                  self._radius, fill=theme.TRACK, outline="")
+        # Podzialka co 25 % lezy POD wypelnieniem: widac ja tylko na pustej
+        # czesci rowka. Ciemne kreski na kolorowym pasku wygladaly jak bledy.
+        self._ticks = [self._canvas.create_line(0, 3, 0, height - 3,
+                                                fill=theme.mix(theme.TRACK,
+                                                               theme.BORDER_HI,
+                                                               0.55),
+                                                width=1)
+                       for _ in range(3)]
         self._fill = round_rect(self._canvas, 0, 0, 0, height, self._radius,
                                 fill=color, outline="")
-        # kreski co 25 % - czytaja sie jak podzialka, takze na wypelnieniu
-        self._ticks = [self._canvas.create_line(0, 1, 0, height - 1,
-                                                fill=theme.PANEL, width=2)
-                       for _ in range(3)]
         if bipolar:
             self._mid = self._canvas.create_line(width / 2, 0, width / 2, height,
                                                  fill=theme.BORDER_HI, width=1)
@@ -363,7 +476,7 @@ class BarMeter(tk.Frame):
         set_round_rect(self._canvas, self._track, 0, 0, w, h, self._radius)
         for i, tick in enumerate(self._ticks):
             x = w * (i + 1) / 4.0
-            self._canvas.coords(tick, x, 1, x, h - 1)
+            self._canvas.coords(tick, x, 3, x, h - 3)
             self._canvas.itemconfigure(tick, state="normal" if w > 60
                                        else "hidden")
         if self._mid is not None:
@@ -409,7 +522,8 @@ class BarMeter(tk.Frame):
                 self._pct.configure(fg=theme.TEXT if value > 0.002
                                     else theme.MUTED)
 
-        if self._raw is not None:
+        if self._raw is not None and raw != self._raw_value:
+            self._raw_value = raw
             self._raw.configure(text="" if raw is None else f"{raw:>4d}")
 
     def set_color(self, color: str) -> None:
@@ -819,39 +933,94 @@ class StatRow(tk.Frame):
 
 
 class ScrollableFrame(ttk.Frame):
-    """Pionowo przewijany kontener - uzywany w zakladkach z wieloma polami."""
+    """Pionowo przewijany kontener - uzywany w zakladkach z wieloma polami.
+
+    Waski pasek przewijania pojawia sie tylko wtedy, gdy tresc sie nie
+    miesci. Lezy NAD trescia (place), a tresc ma stale miejsce na niego -
+    pokazanie paska nie zmienia szerokosci strony, wiec uklad nie skacze.
+    """
+
+    BAR_W = 8                   # szerokosc paska
+    GUTTER = 14                 # miejsce na pasek po prawej stronie tresci
 
     def __init__(self, master: tk.Misc, **kw) -> None:
         super().__init__(master, **kw)
-        self._canvas = tk.Canvas(self, bg=theme.BG, highlightthickness=0, bd=0)
+        self._canvas = tk.Canvas(self, bg=theme.BG, highlightthickness=0, bd=0,
+                                 yscrollincrement=24)
+        self._canvas.pack(fill="both", expand=True)
         self._bar = ttk.Scrollbar(self, orient="vertical",
+                                  style="Slim.Vertical.TScrollbar",
                                   command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=self._bar.set)
-        self._canvas.pack(side="left", fill="both", expand=True)
-        self._bar.pack(side="right", fill="y")
+        self._bar_shown = False
+        self._wheel_acc = 0.0
+        self._canvas.configure(yscrollcommand=self._on_scroll)
+        self._canvas.scrollable_frame = self    # dla wspolnej obslugi kolka
 
         self.inner = ttk.Frame(self._canvas, style="Root.TFrame")
         self._win = self._canvas.create_window((0, 0), window=self.inner,
                                                anchor="nw")
         self.inner.bind("<Configure>", self._on_inner)
         self._canvas.bind("<Configure>", self._on_canvas)
-        self._canvas.bind("<Enter>", lambda _e: self._bind_wheel(True))
-        self._canvas.bind("<Leave>", lambda _e: self._bind_wheel(False))
+        _install_wheel(self)
 
     def _on_inner(self, _event) -> None:
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
     def _on_canvas(self, event) -> None:
-        self._canvas.itemconfigure(self._win, width=event.width)
+        self._canvas.itemconfigure(self._win,
+                                   width=max(1, event.width - self.GUTTER))
 
-    def _bind_wheel(self, on: bool) -> None:
-        if on:
-            self._canvas.bind_all("<MouseWheel>", self._on_wheel)
-        else:
-            self._canvas.unbind_all("<MouseWheel>")
+    def _on_scroll(self, first: str, last: str) -> None:
+        self._bar.set(first, last)
+        need = float(first) > 0.0 or float(last) < 1.0
+        if need and not self._bar_shown:
+            self._bar.place(relx=1.0, x=-1, y=0, relheight=1.0,
+                            width=self.BAR_W, anchor="ne")
+            self._bar_shown = True
+        elif not need and self._bar_shown:
+            self._bar.place_forget()
+            self._bar_shown = False
 
-    def _on_wheel(self, event) -> None:
+    def scroll_wheel(self, delta: int) -> None:
         first, last = self._canvas.yview()
         if first <= 0.0 and last >= 1.0:
             return
-        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        # 120 = jeden zabek kolka = 3 kroki po 24 px. Gladzik wysyla
+        # ulamki zabka - zbieramy je, zamiast gubic.
+        self._wheel_acc -= delta / 40.0
+        steps = int(self._wheel_acc)
+        if steps:
+            self._wheel_acc -= steps
+            self._canvas.yview_scroll(steps, "units")
+
+
+def _install_wheel(widget: tk.Misc) -> None:
+    """Jedna obsluga kolka myszy dla calej aplikacji.
+
+    Przewija strone pod kursorem - nie te, nad ktora kursor wszedl ostatnio
+    (strony zakladek leza jedna nad druga). Pomija pola, ktore przewijaja
+    sie same (dziennik, listy). Rozwiniete listy comboboxow tez.
+    """
+    root = widget.winfo_toplevel()
+    if getattr(root, "_wheel_installed", False):
+        return
+    root._wheel_installed = True
+
+    def on_wheel(event) -> None:
+        try:
+            target = root.winfo_containing(event.x_root, event.y_root)
+        except (KeyError, tk.TclError):
+            return
+        while target is not None:
+            if isinstance(target, (tk.Text, tk.Listbox)):
+                return
+            frame = getattr(target, "scrollable_frame", None)
+            if frame is not None:
+                frame.scroll_wheel(event.delta)
+                return
+            target = target.master
+
+    root.bind_all("<MouseWheel>", on_wheel, add="+")
+    # Kolko nad comboboxem zmienialo jego wartosc - przy przewijaniu
+    # zakladki Przyciski latwo bylo przypadkiem zmienic przypisanie.
+    root.unbind_class("TCombobox", "<MouseWheel>")

@@ -61,8 +61,8 @@ ROW_LABELS = {
     "BACK": "Back",
     "START": "Start",
     "GUIDE": "Guide",
-    "DPAD_UP": "▲ gora",
-    "DPAD_DOWN": "▼ dol",
+    "DPAD_UP": "▲ góra",
+    "DPAD_DOWN": "▼ dół",
     "DPAD_LEFT": "◀ lewo",
     "DPAD_RIGHT": "▶ prawo",
 }
@@ -76,11 +76,11 @@ for _d in PAD_DIRECTIONS:
 TITLES = dict(PAD_DIRECTION_LABELS)
 TITLES.update({
     "LB": "Lewy bumper (LB)", "RB": "Prawy bumper (RB)",
-    "LS": "Klik lewego drazka (L3)", "RS": "Klik prawego drazka (R3)",
+    "LS": "Klik lewego drążka (L3)", "RS": "Klik prawego drążka (R3)",
     "A": "Przycisk A", "B": "Przycisk B", "X": "Przycisk X", "Y": "Przycisk Y",
     "BACK": "Back", "START": "Start", "GUIDE": "Guide",
-    "DPAD_UP": "Krzyzak w gore", "DPAD_DOWN": "Krzyzak w dol",
-    "DPAD_LEFT": "Krzyzak w lewo", "DPAD_RIGHT": "Krzyzak w prawo",
+    "DPAD_UP": "Krzyżak w górę", "DPAD_DOWN": "Krzyżak w dół",
+    "DPAD_LEFT": "Krzyżak w lewo", "DPAD_RIGHT": "Krzyżak w prawo",
 })
 BOX_TITLES = TITLES          # zgodnosc z poprzednia nazwa
 
@@ -90,16 +90,16 @@ BOX_TITLES = TITLES          # zgodnosc z poprzednia nazwa
 #: tylko w pionie).
 GROUPS: Tuple[Tuple[Tuple[str, str, Tuple[str, ...]], ...], ...] = (
     (
-        ("Lewy drazek", "axis", ("LX-", "LX+", "LY+", "LY-")),
-        ("Prawy drazek", "axis", ("RX-", "RX+", "RY+", "RY-")),
+        ("Lewy drążek", "axis", ("LX-", "LX+", "LY+", "LY-")),
+        ("Prawy drążek", "axis", ("RX-", "RX+", "RY+", "RY-")),
         ("Spusty analogowe", "axis", ("LT", "RT")),
         ("Bumpery", "button", ("LB", "RB")),
     ),
     (
         ("Przyciski", "button", ("A", "B", "X", "Y")),
-        ("Krzyzak", "button", ("DPAD_UP", "DPAD_DOWN", "DPAD_LEFT",
+        ("Krzyżak", "button", ("DPAD_UP", "DPAD_DOWN", "DPAD_LEFT",
                                "DPAD_RIGHT")),
-        ("Klik drazkow i srodek", "button", ("LS", "RS", "BACK", "START",
+        ("Klik drążków i środek", "button", ("LS", "RS", "BACK", "START",
                                              "GUIDE")),
     ),
 )
@@ -256,6 +256,11 @@ class PadCanvas(tk.Canvas):
         self._pulse_on = True
         self._highlight: Optional[str] = None
         self._hover: Optional[str] = None
+        # co juz jest narysowane - te same wartosci nie przerysowuja plotna
+        self._sticks_shown: Optional[Tuple[float, ...]] = None
+        self._triggers_shown: Optional[Tuple[int, int]] = None
+        self._angle_shown: Optional[float] = None
+        self._pedals_shown: Dict[str, float] = {}
 
         self._trig_fill: Dict[str, int] = {}
         self._trig_text: Dict[str, int] = {}
@@ -627,6 +632,12 @@ class PadCanvas(tk.Canvas):
             self._refresh()
 
     def set_sticks(self, lx: float, ly: float, rx: float, ry: float) -> None:
+        # co klatke przychodzi to samo, gdy nikt nie rusza drazkiem -
+        # przesuwanie ksztaltow w miejscu to zbedne przerysowanie
+        key = (round(lx, 3), round(ly, 3), round(rx, 3), round(ry, 3))
+        if key == self._sticks_shown:
+            return
+        self._sticks_shown = key
         for side, (dx, dy) in (("L", (lx, ly)), ("R", (rx, ry))):
             ox, oy = _STICKS[side]
             px = CX + ox + max(-1.0, min(1.0, dx)) * _STICK_TRAVEL
@@ -640,6 +651,10 @@ class PadCanvas(tk.Canvas):
             self.coords(self._knob_mark[side], px, py)
 
     def set_triggers(self, lt: int, rt: int) -> None:
+        key = (int(lt), int(rt))
+        if key == self._triggers_shown:
+            return
+        self._triggers_shown = key
         for name, raw in (("LT", lt), ("RT", rt)):
             raw = max(0, min(255, int(raw)))
             x1, y1, x2, y2 = self._trig_box[name]
@@ -803,9 +818,9 @@ class PadView(ttk.Frame):
     _ROW_LABELS: Dict[str, str] = ROW_LABELS
     _PART_OF_SLOT: Dict[str, str] = _PART_OF_SLOT
     _SLOTS_OF_PART: Dict[str, Tuple[str, ...]] = _SLOTS_OF_PART
-    _IDLE_HINT = ("Kliknij wiersz: kierunki i spusty otwieraja liste "
-                  "zrodel, przyciski ucza sie z kierownicy. Prawy przycisk "
-                  "myszy czysci gniazdo.")
+    _IDLE_HINT = ("Kliknij wiersz: kierunki i spusty otwierają listę "
+                  "źródeł, przyciski uczą się z kierownicy. Prawy przycisk "
+                  "myszy czyści gniazdo.")
     _NAME_MINSIZE = 86
 
     def __init__(self, master: tk.Misc, fonts: Fonts,
@@ -869,9 +884,9 @@ class PadView(ttk.Frame):
     def _build_legend(self) -> tk.Frame:
         """Legenda kolorow - bez niej trzeba zgadywac, co znaczy podswietlenie."""
         box = tk.Frame(self, bg=theme.PANEL)
-        items = (("wcisniete", theme.ACCENT),
+        items = (("wciśnięte", theme.ACCENT),
                  ("przypisane", theme.mix(theme.PANEL_HI, theme.ACCENT, 0.20)),
-                 ("uczy sie", theme.WARN),
+                 ("uczy się", theme.WARN),
                  ("wolne", theme.PANEL_HI))
         for i, (text, color) in enumerate(items):
             cell = tk.Frame(box, bg=theme.PANEL)
@@ -1051,7 +1066,7 @@ class PadView(ttk.Frame):
         parts: List[str] = []
         if self._wizard:
             parts.append(f"Krok {self._wizard[0]} z {self._wizard[1]}")
-        parts.append("Wcisnij przycisk kierownicy dla: "
+        parts.append("Wciśnij przycisk kierownicy dla: "
                      f"{self._TITLES.get(self._learning, self._learning)}")
         current = self._assign.get(self._learning, -1)
         if current >= 0:
@@ -1059,7 +1074,7 @@ class PadView(ttk.Frame):
         if self._held:
             parts.append("trzymasz: "
                          + ", ".join(str(i) for i in self._held))
-        parts.append("Esc konczy" if self._wizard else "Esc anuluje")
+        parts.append("Esc kończy" if self._wizard else "Esc anuluje")
         bg = theme.mix(theme.PANEL_HI, theme.WARN, 0.14)
         self.hint.configure(text="      ".join(parts), fg=theme.WARN, bg=bg)
         self._hint_box.configure(bg=bg, highlightbackground=theme.mix(

@@ -335,7 +335,7 @@ class WheelCanvas(PadCanvas):
                              font=(self._fonts.family, 6, "bold"),
                              fill=theme.MUTED)
         self.create_text(CX + _PEDALS[1][1], CY + _PEDAL_TOP - 22,
-                         text="PEDALY", font=self._fonts.tiny_bold,
+                         text="PEDAŁY", font=self._fonts.tiny_bold,
                          fill=theme.MUTED)
 
     # ---------------------------------------------------------------- stan
@@ -343,6 +343,9 @@ class WheelCanvas(PadCanvas):
     def set_angle(self, deg: float) -> None:
         """Znacznik na obreczy obraca sie razem z kierownica."""
         deg = 0.0 if deg != deg else deg
+        if self._angle_shown is not None and abs(deg - self._angle_shown) < 0.05:
+            return
+        self._angle_shown = deg
         a = math.radians(-90.0 + deg)
         r1, r2 = _RIM_IN + 3, _RIM_OUT - 3
         self.coords(self._angle_line,
@@ -355,9 +358,13 @@ class WheelCanvas(PadCanvas):
     def set_pedals(self, values: Dict[str, float]) -> None:
         h = _PEDAL_HALF
         span = _PEDAL_BOTTOM - _PEDAL_TOP
+        shown = self._pedals_shown
         for key, x, _text in _PEDALS:
             v = values.get(key, 0.0)
             v = 0.0 if v != v else max(0.0, min(1.0, v))
+            if abs(v - shown.get(key, -1.0)) < 0.002:
+                continue
+            shown[key] = v
             item = self._pedal_fill[key]
             if v * span < 3:
                 self.itemconfigure(item, state="hidden")
@@ -386,7 +393,7 @@ class WheelCanvas(PadCanvas):
 #: Krotkie nazwy w wierszach listy.
 ROW_LABELS = dict(G29_CONTROL_LABELS)
 ROW_LABELS.update({
-    "DPAD_UP": "▲ gora", "DPAD_DOWN": "▼ dol",
+    "DPAD_UP": "▲ góra", "DPAD_DOWN": "▼ dół",
     "DPAD_LEFT": "◀ lewo", "DPAD_RIGHT": "▶ prawo",
     "ENTER": "Enter",
 })
@@ -394,16 +401,16 @@ ROW_LABELS.update({
 GROUPS = (
     (
         ("Przyciski", "button", ("CROSS", "SQUARE", "CIRCLE", "TRIANGLE")),
-        ("Lopatki", "button", ("PADDLE_L", "PADDLE_R")),
-        ("Krzyzak", "button", ("DPAD_UP", "DPAD_DOWN", "DPAD_LEFT",
+        ("Łopatki", "button", ("PADDLE_L", "PADDLE_R")),
+        ("Krzyżak", "button", ("DPAD_UP", "DPAD_DOWN", "DPAD_LEFT",
                                "DPAD_RIGHT")),
         ("L2 / R2 / L3 / R3", "button", ("L2", "R2", "L3", "R3")),
     ),
     (
-        ("Srodek", "button", ("SHARE", "OPTIONS", "PS")),
-        ("Pokretlo", "button", ("PLUS", "MINUS", "DIAL_CW", "DIAL_CCW",
+        ("Środek", "button", ("SHARE", "OPTIONS", "PS")),
+        ("Pokrętło", "button", ("PLUS", "MINUS", "DIAL_CW", "DIAL_CCW",
                                 "ENTER")),
-        ("Skrzynia biegow", "button", ("GEAR_1", "GEAR_2", "GEAR_3", "GEAR_4",
+        ("Skrzynia biegów", "button", ("GEAR_1", "GEAR_2", "GEAR_3", "GEAR_4",
                                        "GEAR_5", "GEAR_6", "GEAR_R")),
     ),
 )
@@ -429,9 +436,9 @@ class WheelView(PadView):
     _ROW_LABELS = ROW_LABELS
     _PART_OF_SLOT = {c: c for c in G29_CONTROLS}
     _SLOTS_OF_PART = {c: (c,) for c in G29_CONTROLS}
-    _IDLE_HINT = ("Kliknij przycisk na rysunku albo wiersz na liscie, a potem "
-                  "wcisnij przycisk na swojej kierownicy. Prawy przycisk myszy "
-                  "czysci gniazdo.")
+    _IDLE_HINT = ("Kliknij przycisk na rysunku albo wiersz na liście, a potem "
+                  "wciśnij przycisk na swojej kierownicy. Prawy przycisk myszy "
+                  "czyści gniazdo.")
     _NAME_MINSIZE = 112
 
     def set_angle(self, deg: float) -> None:

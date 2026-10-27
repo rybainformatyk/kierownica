@@ -100,21 +100,21 @@ VIGEM_ERROR_NONE = 0x20000000
 VIGEM_ERRORS = {
     0x20000000: "OK",
     0xE0000001: "nie znaleziono sterownika ViGEmBus - zainstaluj go",
-    0xE0000002: "brak wolnego gniazda na kolejne urzadzenie",
-    0xE0000003: "nieprawidlowy cel",
-    0xE0000004: "nie udalo sie usunac urzadzenia",
-    0xE0000005: "urzadzenie jest juz podlaczone",
-    0xE0000006: "urzadzenie niezainicjowane",
-    0xE0000007: "urzadzenie nie jest podlaczone",
+    0xE0000002: "brak wolnego gniazda na kolejne urządzenie",
+    0xE0000003: "nieprawidłowy cel",
+    0xE0000004: "nie udało się usunąć urządzenia",
+    0xE0000005: "urządzenie jest już podłączone",
+    0xE0000006: "urządzenie niezainicjowane",
+    0xE0000007: "urządzenie nie jest podłączone",
     0xE0000008: "niezgodna wersja sterownika ViGEmBus - zaktualizuj go",
-    0xE0000009: "brak dostepu do sterownika (sprobuj uruchomic jako administrator)",
-    0xE0000010: "callback juz zarejestrowany",
+    0xE0000009: "brak dostępu do sterownika (spróbuj uruchomić jako administrator)",
+    0xE0000010: "callback już zarejestrowany",
     0xE0000011: "nie znaleziono callbacku",
-    0xE0000012: "magistrala juz polaczona",
-    0xE0000013: "nieprawidlowy uchwyt magistrali",
-    0xE0000014: "numer uzytkownika poza zakresem",
-    0xE0000015: "nieprawidlowy parametr",
-    0xE0000016: "operacja nieobslugiwana",
+    0xE0000012: "magistrala już połączona",
+    0xE0000013: "nieprawidłowy uchwyt magistrali",
+    0xE0000014: "numer użytkownika poza zakresem",
+    0xE0000015: "nieprawidłowy parametr",
+    0xE0000016: "operacja nieobsługiwana",
 }
 
 # --- maski przyciskow XUSB (zgodne z XINPUT_GAMEPAD_*) ---
@@ -145,18 +145,18 @@ PAD_BUTTON_LABELS = {
     "A": "A", "B": "B", "X": "X", "Y": "Y",
     "LB": "LB", "RB": "RB", "LS": "L3", "RS": "R3",
     "BACK": "Back", "START": "Start", "GUIDE": "Guide",
-    "DPAD_UP": "Krzyzak gora", "DPAD_DOWN": "Krzyzak dol",
-    "DPAD_LEFT": "Krzyzak lewo", "DPAD_RIGHT": "Krzyzak prawo",
+    "DPAD_UP": "Krzyżak góra", "DPAD_DOWN": "Krzyżak dół",
+    "DPAD_LEFT": "Krzyżak lewo", "DPAD_RIGHT": "Krzyżak prawo",
 }
 
 #: Cele dla osi analogowych. LT/RT to spusty (0..255), reszta to drazki.
 PAD_AXIS_TARGETS = ("-", "LX", "LY", "RX", "RY", "LT", "RT")
 PAD_AXIS_LABELS = {
-    "-": "nieuzywane",
-    "LX": "Lewy drazek X",
-    "LY": "Lewy drazek Y",
-    "RX": "Prawy drazek X",
-    "RY": "Prawy drazek Y",
+    "-": "nieużywane",
+    "LX": "Lewy drążek X",
+    "LY": "Lewy drążek Y",
+    "RX": "Prawy drążek X",
+    "RY": "Prawy drążek Y",
     "LT": "Lewy spust",
     "RT": "Prawy spust",
 }
@@ -268,7 +268,7 @@ class _ViGEmApi:
 
 
 def _err(code: int) -> str:
-    return VIGEM_ERRORS.get(code & 0xFFFFFFFF, f"nieznany blad 0x{code:08X}")
+    return VIGEM_ERRORS.get(code & 0xFFFFFFFF, f"nieznany błąd 0x{code:08X}")
 
 
 def vigem_diagnostics() -> Dict[str, object]:
@@ -283,19 +283,19 @@ def vigem_diagnostics() -> Dict[str, object]:
     path = find_vigem_dll()
     info["dll_path"] = str(path) if path else None
     if path is None:
-        info["error"] = (f"Nie znaleziono {_DLL_NAME}. Powinien lezec w katalogu "
+        info["error"] = (f"Nie znaleziono {_DLL_NAME}. Powinien leżeć w katalogu "
                          f"vigem/ obok aplikacji.")
         return info
     try:
         api = _ViGEmApi(path)
     except OSError as exc:
-        info["error"] = f"Nie udalo sie zaladowac biblioteki: {exc}"
+        info["error"] = f"Nie udało się załadować biblioteki: {exc}"
         return info
     info["dll_loaded"] = True
 
     client = api.dll.vigem_alloc()
     if not client:
-        info["error"] = "vigem_alloc() nie przydzielil pamieci"
+        info["error"] = "vigem_alloc() nie przydzielił pamięci"
         return info
     try:
         code = api.dll.vigem_connect(client)
@@ -370,9 +370,9 @@ class XInputBackend(OutputBackend):
         if path is None:
             raise ViGEmNotAvailable(
                 f"Nie znaleziono {_DLL_NAME}.\n\n"
-                f"Biblioteka powinna lezec w katalogu 'vigem' obok aplikacji "
+                f"Biblioteka powinna leżeć w katalogu 'vigem' obok aplikacji "
                 f"(podkatalog x64 dla 64-bitowego Pythona).\n"
-                f"Mozna tez zainstalowac pakiet vgamepad:\n"
+                f"Można też zainstalować pakiet vgamepad:\n"
                 f"    python -m pip install vgamepad"
             )
         try:
@@ -380,21 +380,21 @@ class XInputBackend(OutputBackend):
         except OSError as exc:
             bits = 64 if sys.maxsize > 2 ** 32 else 32
             raise ViGEmNotAvailable(
-                f"Nie udalo sie zaladowac {path}:\n{exc}\n\n"
-                f"Najczestsza przyczyna to niezgodnosc architektury - "
-                f"uzywasz Pythona {bits}-bit, wiec potrzebna jest biblioteka "
+                f"Nie udało się załadować {path}:\n{exc}\n\n"
+                f"Najczęstsza przyczyna to niezgodność architektury - "
+                f"używasz Pythona {bits}-bit, więc potrzebna jest biblioteka "
                 f"z katalogu {'x64' if bits == 64 else 'x86'}."
             ) from exc
 
         client = api.dll.vigem_alloc()
         if not client:
-            raise ViGEmNotAvailable("Nie udalo sie przydzielic klienta ViGEm.")
+            raise ViGEmNotAvailable("Nie udało się przydzielić klienta ViGEm.")
 
         code = api.dll.vigem_connect(client)
         if code != VIGEM_ERROR_NONE:
             api.dll.vigem_free(client)
             raise ViGEmNotAvailable(
-                f"Nie udalo sie polaczyc ze sterownikiem ViGEmBus:\n"
+                f"Nie udało się połączyć ze sterownikiem ViGEmBus:\n"
                 f"{_err(code)}\n\n"
                 f"Zainstaluj ViGEmBus:\n"
                 f"https://github.com/nefarius/ViGEmBus/releases"
@@ -404,7 +404,7 @@ class XInputBackend(OutputBackend):
         if not target:
             api.dll.vigem_disconnect(client)
             api.dll.vigem_free(client)
-            raise ViGEmNotAvailable("Nie udalo sie utworzyc wirtualnego pada.")
+            raise ViGEmNotAvailable("Nie udało się utworzyć wirtualnego pada.")
 
         slots_before = _xinput_slots()
         code = api.dll.vigem_target_add(client, target)
@@ -413,7 +413,7 @@ class XInputBackend(OutputBackend):
             api.dll.vigem_disconnect(client)
             api.dll.vigem_free(client)
             raise ViGEmNotAvailable(
-                f"Nie udalo sie podlaczyc wirtualnego pada:\n{_err(code)}"
+                f"Nie udało się podłączyć wirtualnego pada:\n{_err(code)}"
             )
 
         self._api = api
@@ -530,8 +530,8 @@ class XInputBackend(OutputBackend):
         if not self._open:
             return "Pad nieaktywny"
         where = f" (gniazdo {self._slot + 1})" if self._slot is not None else ""
-        return ("Pad Xbox 360 podlaczony" + where
-                + " - gry widza go jako kontroler XInput")
+        return ("Pad Xbox 360 podłączony" + where
+                + " - gry widzą go jako kontroler XInput")
 
 
 def _clamp_u8(v: int) -> int:

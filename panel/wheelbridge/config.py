@@ -23,7 +23,7 @@ PEDAL_KEYS = ("throttle", "brake", "clutch", "aux1", "aux2", "aux3")
 PEDAL_LABELS = {
     "throttle": "Gaz",
     "brake": "Hamulec",
-    "clutch": "Sprzeglo",
+    "clutch": "Sprzęgło",
     "aux1": "AUX 1",
     "aux2": "AUX 2",
     "aux3": "AUX 3",
@@ -151,14 +151,14 @@ PAD_DIRECTIONS = ("LX-", "LX+", "LY+", "LY-",
 
 #: Pelne nazwy - do menu, dziennika i komunikatow.
 PAD_DIRECTION_LABELS = {
-    "LX-": "Lewy drazek w lewo",
-    "LX+": "Lewy drazek w prawo",
-    "LY+": "Lewy drazek w gore",
-    "LY-": "Lewy drazek w dol",
-    "RX-": "Prawy drazek w lewo",
-    "RX+": "Prawy drazek w prawo",
-    "RY+": "Prawy drazek w gore",
-    "RY-": "Prawy drazek w dol",
+    "LX-": "Lewy drążek w lewo",
+    "LX+": "Lewy drążek w prawo",
+    "LY+": "Lewy drążek w górę",
+    "LY-": "Lewy drążek w dół",
+    "RX-": "Prawy drążek w lewo",
+    "RX+": "Prawy drążek w prawo",
+    "RY+": "Prawy drążek w górę",
+    "RY-": "Prawy drążek w dół",
     "LT": "Lewy spust (LT)",
     "RT": "Prawy spust (RT)",
 }
@@ -168,12 +168,12 @@ PAD_DIRECTION_LABELS = {
 PAD_DIRECTION_SHORT = {
     "LX-": "w lewo",
     "LX+": "w prawo",
-    "LY+": "w gore",
-    "LY-": "w dol",
+    "LY+": "w górę",
+    "LY-": "w dół",
     "RX-": "w lewo",
     "RX+": "w prawo",
-    "RY+": "w gore",
-    "RY-": "w dol",
+    "RY+": "w górę",
+    "RY-": "w dół",
     "LT": "LT - lewy spust",
     "RT": "RT - prawy spust",
 }
@@ -188,7 +188,7 @@ PAD_SOURCE_LABELS = {
     "steer_right": "Kierownica w prawo",
     "throttle": "Gaz",
     "brake": "Hamulec",
-    "clutch": "Sprzeglo",
+    "clutch": "Sprzęgło",
     "aux1": "AUX 1",
     "aux2": "AUX 2",
     "aux3": "AUX 3",
@@ -263,8 +263,8 @@ PAD_PROFILES: Dict[str, Dict[str, Any]] = {
 #: Kolejnosc i nazwy w interfejsie. "" to profil wlasny - nic nie ustawia.
 PAD_PROFILE_ORDER = ("", "nfs", "forza")
 PAD_PROFILE_LABELS = {
-    "": "Wlasny",
-    "nfs": "NFS i gry zrecznosciowe",
+    "": "Własny",
+    "nfs": "NFS i gry zręcznościowe",
     "forza": "Forza Horizon / Motorsport",
 }
 
@@ -348,11 +348,11 @@ class LinkConfig:
 #: wystawia vJoy i pada naraz.
 OUTPUT_MODES = ("g29", "wheel", "pad", "both", "none")
 OUTPUT_MODE_LABELS = {
-    "g29": "Kierownica G29 (Native USB) - kazda gra",
+    "g29": "Kierownica G29 (Native USB) - każda gra",
     "wheel": "Kierownica (vJoy) - symulatory, Force Feedback",
     "pad": "Pad Xbox 360 (ViGEm) - gry XInput, np. NFS",
     "both": "Oba naraz - kierownica i pad",
-    "none": "Tylko podglad - nic nie wysylaj",
+    "none": "Tylko podgląd - nic nie wysyłaj",
 }
 
 
@@ -371,19 +371,19 @@ G29_DPAD = ("DPAD_UP", "DPAD_RIGHT", "DPAD_DOWN", "DPAD_LEFT")
 G29_CONTROLS = G29_BUTTON_NAMES + G29_DPAD
 
 G29_CONTROL_LABELS = {
-    "CROSS": "Krzyzyk", "SQUARE": "Kwadrat", "CIRCLE": "Kolko",
-    "TRIANGLE": "Trojkat",
-    "PADDLE_R": "Prawa lopatka", "PADDLE_L": "Lewa lopatka",
+    "CROSS": "Krzyżyk", "SQUARE": "Kwadrat", "CIRCLE": "Kółko",
+    "TRIANGLE": "Trójkąt",
+    "PADDLE_R": "Prawa łopatka", "PADDLE_L": "Lewa łopatka",
     "R2": "R2", "L2": "L2", "R3": "R3", "L3": "L3",
     "SHARE": "Share", "OPTIONS": "Options", "PS": "PS",
     "GEAR_1": "Bieg 1", "GEAR_2": "Bieg 2", "GEAR_3": "Bieg 3",
     "GEAR_4": "Bieg 4", "GEAR_5": "Bieg 5", "GEAR_6": "Bieg 6",
     "GEAR_R": "Wsteczny",
     "PLUS": "Plus (+)", "MINUS": "Minus (-)",
-    "DIAL_CW": "Pokretlo w prawo", "DIAL_CCW": "Pokretlo w lewo",
-    "ENTER": "Enter (pokretlo)",
-    "DPAD_UP": "Krzyzak w gore", "DPAD_RIGHT": "Krzyzak w prawo",
-    "DPAD_DOWN": "Krzyzak w dol", "DPAD_LEFT": "Krzyzak w lewo",
+    "DIAL_CW": "Pokrętło w prawo", "DIAL_CCW": "Pokrętło w lewo",
+    "ENTER": "Enter (pokrętło)",
+    "DPAD_UP": "Krzyżak w górę", "DPAD_RIGHT": "Krzyżak w prawo",
+    "DPAD_DOWN": "Krzyżak w dół", "DPAD_LEFT": "Krzyżak w lewo",
 }
 
 #: Odpowiedniki kontrolek pada na G29 - po tym przenosimy przypisania

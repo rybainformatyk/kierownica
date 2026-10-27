@@ -82,7 +82,7 @@ class G29Tab:
         cb.pack(side="right")
         cb.bind("<<ComboboxSelected>>",
                 lambda _e: app._on_mode_change(app.var_mode_g29))
-        tk.Label(bar, text="Tryb wyjscia", bg=theme.PANEL, fg=theme.TEXT_DIM,
+        tk.Label(bar, text="Tryb wyjścia", bg=theme.PANEL, fg=theme.TEXT_DIM,
                  font=fonts.small).pack(side="right", padx=(0, 9))
         self.lbl_state = tk.Label(bar, text="", bg=theme.PANEL,
                                   fg=theme.TEXT_DIM, font=fonts.small)
@@ -97,20 +97,20 @@ class G29Tab:
                    command=self.wizard_start).pack(side="left")
         ttk.Button(self._tools, text="Przepisz z pada", style="Small.TButton",
                    command=self.copy_from_pad).pack(side="left", padx=(6, 0))
-        ttk.Button(self._tools, text="Domyslne", style="Small.TButton",
+        ttk.Button(self._tools, text="Domyślne", style="Small.TButton",
                    command=self.defaults).pack(side="left", padx=(6, 0))
-        ttk.Button(self._tools, text="Wyczysc wszystko", style="Small.TButton",
+        ttk.Button(self._tools, text="Wyczyść wszystko", style="Small.TButton",
                    command=self.clear_all).pack(side="left", padx=(6, 0))
 
         self._wizard_tools = ttk.Frame(view.right_slot, style="Card.TFrame")
         ttk.Button(self._wizard_tools, text="Wstecz", style="Small.TButton",
                    command=self.wizard_back).pack(side="left")
-        ttk.Button(self._wizard_tools, text="Pomin", style="Small.TButton",
+        ttk.Button(self._wizard_tools, text="Pomiń", style="Small.TButton",
                    command=self.wizard_skip).pack(side="left", padx=(6, 0))
-        ttk.Button(self._wizard_tools, text="Wyczysc i pomin",
+        ttk.Button(self._wizard_tools, text="Wyczyść i pomiń",
                    style="Small.TButton",
                    command=self.wizard_clear).pack(side="left", padx=(6, 0))
-        ttk.Button(self._wizard_tools, text="Zakoncz", style="Accent.TButton",
+        ttk.Button(self._wizard_tools, text="Zakończ", style="Accent.TButton",
                    command=self.wizard_stop).pack(side="left", padx=(6, 0))
 
         self.lbl_live = ttk.Label(view.body, text="", style="Good.TLabel")
@@ -124,12 +124,12 @@ class G29Tab:
 
         ttk.Label(view.body, style="Muted.TLabel", wraplength=1080,
                   justify="left",
-                  text="Te przypisania dzialaja tylko w trybie Kierownica G29 i "
-                       "nie zaleza od zakladki Pad ani od listy vJoy w zakladce "
-                       "Przyciski. Krzyzak bez przypisan bierze kierunki z "
-                       "krzyzaka ustawionego w zakladce Przyciski. Biegi to "
-                       "przyciski skrzyni G29 - przypisz je, jesli masz "
-                       "wlasna skrzynie albo manetki."
+                  text="Te przypisania działają tylko w trybie Kierownica G29 i "
+                       "nie zależą od zakładki Pad ani od listy vJoy w zakładce "
+                       "Przyciski. Krzyżak bez przypisań bierze kierunki z "
+                       "krzyżaka ustawionego w zakładce Przyciski. Biegi to "
+                       "przyciski skrzyni G29 - przypisz je, jeśli masz "
+                       "własną skrzynię albo manetki."
                   ).pack(anchor="w", pady=(12, 0))
 
     # ---------------------------------------------------------- stan
@@ -145,14 +145,14 @@ class G29Tab:
     def _status(self, connected: bool):
         st = self.app.engine.status
         if not connected:
-            return "Brak polaczenia z plytka", theme.MUTED
+            return "Brak połączenia z płytką", theme.MUTED
         if not st.g29_fw:
             return "Firmware bez trybu G29 - wgraj nowy (wgraj_firmware.bat)", theme.BAD
         if not self.cfg.output.g29_on:
-            return "Tryb G29 wylaczony - gra nie dostaje tych przypisan", theme.WARN
+            return "Tryb G29 wyłączony - gra nie dostaje tych przypisań", theme.WARN
         if not st.g29_usb:
-            return "Podlacz kabel do portu Native USB", theme.BAD
-        return "Windows widzi G29 - przypisania dzialaja w grze", theme.GOOD
+            return "Podłącz kabel do portu Native USB", theme.BAD
+        return "Windows widzi G29 - przypisania działają w grze", theme.GOOD
 
     def tick(self, state_obj, connected: bool, visible: bool) -> None:
         """Wolane z PanelApp._refresh co klatke."""
@@ -196,7 +196,7 @@ class G29Tab:
             text = ""
         else:
             names = [self._label(n) for n in G29_CONTROLS if active.get(n)]
-            text = "Wcisniete na G29: " + (", ".join(names) if names else "nic")
+            text = "Wciśnięte na G29: " + (", ".join(names) if names else "nic")
         if self.lbl_live.cget("text") != text:
             self.lbl_live.configure(text=text)
 
@@ -295,14 +295,14 @@ class G29Tab:
         filled = sum(1 for v in self.cfg.g29.buttons.values() if v >= 0)
         self._notify(f"Przepisano przypisania z pada - przypisanych kontrolek: "
                      f"{filled} z {len(G29_CONTROLS)}")
-        self._log("ok", "G29: przepisano przypisania z zakladki Pad")
+        self._log("ok", "G29: przepisano przypisania z zakładki Pad")
 
     def defaults(self) -> None:
         self.stop()
         self.cfg.g29.buttons = g29_buttons_from_pad(DEFAULT_PAD_BUTTONS)
         self.cfg.normalize()
         self._sync()
-        self._log("ok", "G29: przywrocono domyslne przypisania")
+        self._log("ok", "G29: przywrócono domyślne przypisania")
 
     def clear_all(self) -> None:
         self.stop()
@@ -319,8 +319,8 @@ class G29Tab:
         self._wizard_i = 0
         self._tools.pack_forget()
         self._wizard_tools.pack(side="left")
-        self._log("info", "G29: kreator przypisan - wciskaj kolejne przyciski "
-                          "kierownicy, Esc konczy")
+        self._log("info", "G29: kreator przypisań - wciskaj kolejne przyciski "
+                          "kierownicy, Esc kończy")
         self._wizard_show()
 
     def _wizard_show(self) -> None:
@@ -364,10 +364,10 @@ class G29Tab:
         self._wizard_tools.pack_forget()
         self._tools.pack(side="left")
         filled = sum(1 for v in self.cfg.g29.buttons.values() if v >= 0)
-        self._notify(f"Kreator zakonczony - przypisanych kontrolek: "
+        self._notify(f"Kreator zakończony - przypisanych kontrolek: "
                      f"{filled} z {len(G29_CONTROLS)}", 6.0)
         self._log("ok" if done else "info",
-                  f"G29: kreator zakonczony ({filled} z {len(G29_CONTROLS)} "
+                  f"G29: kreator zakończony ({filled} z {len(G29_CONTROLS)} "
                   f"kontrolek przypisanych)")
 
     @property

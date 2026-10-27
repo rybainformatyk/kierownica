@@ -57,7 +57,7 @@ class NullBackend(OutputBackend):
     """Tryb podgladu - nic nie wysyla, aplikacja dziala bez sterownika."""
 
     name = "none"
-    label = "Tylko podglad (bez urzadzenia wirtualnego)"
+    label = "Tylko podgląd (bez urządzenia wirtualnego)"
 
     def __init__(self) -> None:
         self._open = False
@@ -85,4 +85,4 @@ class NullBackend(OutputBackend):
         pass
 
     def status_text(self) -> str:
-        return "Podglad - gry nie widza kierownicy"
+        return "Podgląd - gry nie widzą kierownicy"

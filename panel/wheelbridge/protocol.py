@@ -276,7 +276,7 @@ def decode_hello(payload: bytes) -> HelloInfo:
 
 def decode_pong(payload: bytes) -> Tuple[int, int]:
     if len(payload) < 8:
-        raise ValueError("PONG za krotki")
+        raise ValueError("PONG za krótki")
     token, device_ms = struct.unpack(PONG_FMT, payload[:8])
     return token, device_ms
 
@@ -312,7 +312,7 @@ def cmd_set_rate(hz: int) -> bytes:
 def cmd_g29(report: bytes) -> bytes:
     """Raport G29 do wypchniecia przez Native USB - dokladnie 12 bajtow."""
     if len(report) != G29_REPORT_SIZE:
-        raise ValueError(f"raport G29 ma {len(report)} B, musi miec "
+        raise ValueError(f"raport G29 ma {len(report)} B, musi mieć "
                          f"{G29_REPORT_SIZE} B")
     return build_frame(CMD_G29, bytes(report))
 

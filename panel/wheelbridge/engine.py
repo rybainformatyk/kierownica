@@ -156,12 +156,12 @@ class WheelEngine:
         if frame is not None:
             # plytka wyzeruje licznik, wiec offset aplikacji tez idzie do zera
             self.processor.steer.reset()
-        self._log("ok", "Srodek kierownicy ustawiony")
+        self._log("ok", "Środek kierownicy ustawiony")
 
     def reset_board(self) -> None:
         self.link.send(protocol.cmd_reset())
         self.ffb.reset()
-        self._log("info", "Wyslano reset do plytki")
+        self._log("info", "Wysłano reset do płytki")
 
     def _push_board_config(self) -> None:
         """Wywolywane z watku lacza po nawiazaniu polaczenia."""
@@ -196,11 +196,11 @@ class WheelEngine:
                 if backend.ffb_capable:
                     self.ffb.register(backend.api, backend.device_id)
                 else:
-                    self._log("warn", "Urzadzenie vJoy nie ma Force Feedback - "
-                                      "wlacz 'Enable Effects' w vJoyConf")
+                    self._log("warn", "Urządzenie vJoy nie ma Force Feedback - "
+                                      "włącz 'Enable Effects' w vJoyConf")
             else:
-                self._log("warn", "FFB z gier wymaga dzialajacego vJoy; "
-                                  "efekty lokalne (sprezyna, tlumienie) dzialaja i tak")
+                self._log("warn", "FFB z gier wymaga działającego vJoy; "
+                                  "efekty lokalne (sprężyna, tłumienie) działają i tak")
         else:
             self.ffb.reset()
             self.link.send(protocol.cmd_ffb(0))
@@ -238,8 +238,8 @@ class WheelEngine:
         if self.cfg.output.g29_on:
             # G29 wystawia sama plytka - po stronie PC nie ma czego otwierac
             self.last_g29 = None
-            self._log("ok", "Tryb G29: gry widza kierownice Logitech G29 na "
-                            "porcie Native USB plytki")
+            self._log("ok", "Tryb G29: gry widzą kierownicę Logitech G29 na "
+                            "porcie Native USB płytki")
         self._refresh_output_status()
         return ok
 
@@ -274,7 +274,7 @@ class WheelEngine:
         if self.cfg.ffb.enabled and backend.ffb_capable:
             self.ffb.register(backend.api, backend.device_id)
         elif self.cfg.ffb.enabled and not backend.ffb_capable:
-            self._log("warn", "Urzadzenie vJoy nie ma wlaczonego Force Feedback "
+            self._log("warn", "Urządzenie vJoy nie ma włączonego Force Feedback "
                               "- zaznacz 'Enable Effects' w vJoyConf")
         return True
 
@@ -363,7 +363,7 @@ class WheelEngine:
         try:
             self.output.update(axes, state.out_buttons, state.hat)
         except Exception as exc:
-            self._log("error", f"Blad wyjscia: {exc}")
+            self._log("error", f"Błąd wyjścia: {exc}")
 
         pad = self.pad_output
         if pad is not None:
@@ -372,7 +372,7 @@ class WheelEngine:
                 self.last_pad = pad_state
                 pad.send(pad_state)
             except Exception as exc:
-                self._log("error", f"Blad pada: {exc}")
+                self._log("error", f"Błąd pada: {exc}")
 
         self.status.g29_usb = frame.g29_usb
         self.status.g29_fed = frame.g29_fed
@@ -389,7 +389,7 @@ class WheelEngine:
         try:
             report = build_g29_report(state, self.cfg)
         except Exception as exc:
-            self._log("error", f"Blad raportu G29: {exc}")
+            self._log("error", f"Błąd raportu G29: {exc}")
             return
         now = time.monotonic()
         if report == self.last_g29 and now - self._g29_sent_t < G29_KEEPALIVE_S:
@@ -403,13 +403,13 @@ class WheelEngine:
         self.status.g29_out_packets += 1
         self.g29_last_out = bytes(payload)
         if self.status.g29_out_packets == 1:
-            self._log("info", "Gra wysyla komendy do G29: " + payload.hex(" "))
+            self._log("info", "Gra wysyła komendy do G29: " + payload.hex(" "))
         # f8 81 lo hi - zakres obrotu (tak ustawia go sterownik Logitecha)
         if len(payload) >= 4 and payload[0] == 0xF8 and payload[1] == 0x81:
             deg = payload[2] | (payload[3] << 8)
             if deg != self.status.g29_game_range:
                 self.status.g29_game_range = deg
-                self._log("info", f"Gra ustawila zakres obrotu G29: {deg} st.")
+                self._log("info", f"Gra ustawiła zakres obrotu G29: {deg} st.")
 
     def _handle_hello(self, hello: HelloInfo) -> None:
         self.status.firmware = hello.firmware
@@ -452,7 +452,7 @@ class WheelEngine:
                 torque = self._compute_torque()
             except Exception as exc:
                 torque = 0.0
-                self._log("error", f"Blad obliczania FFB: {exc}")
+                self._log("error", f"Błąd obliczania FFB: {exc}")
 
             self.status.ffb_torque = torque
             self.status.ffb_packets = self.ffb.packets

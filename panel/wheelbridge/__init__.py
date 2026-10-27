@@ -6,4 +6,4 @@ mapuje i podaje do urzadzenia vJoy, ktore gry widza jako kierownice
 z Force Feedback.
 """
 
-__version__ = "2.1"
+__version__ = "2.2"

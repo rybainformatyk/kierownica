@@ -28,10 +28,10 @@ CONNECTED = "connected"
 ERROR = "error"
 
 STATE_LABELS = {
-    DISCONNECTED: "Rozlaczono",
-    SCANNING: "Szukanie plytki...",
-    CONNECTED: "Polaczono",
-    ERROR: "Blad",
+    DISCONNECTED: "Rozłączono",
+    SCANNING: "Szukanie płytki...",
+    CONNECTED: "Połączono",
+    ERROR: "Błąd",
 }
 
 #: Czas oczekiwania na HELLO/STATE przy sprawdzaniu jednego portu.
@@ -188,7 +188,7 @@ class SerialLink:
             try:
                 ser.write(frame)
             except (serial.SerialException, OSError) as exc:
-                self._queue_fault(f"Blad zapisu: {exc}")
+                self._queue_fault(f"Błąd zapisu: {exc}")
 
     def _queue_fault(self, msg: str) -> None:
         with self._tx_lock:
@@ -219,7 +219,7 @@ class SerialLink:
 
                 self._pump()
             except Exception as exc:                      # ostatnia linia obrony
-                self._log("error", f"Wyjatek w watku lacza: {exc!r}")
+                self._log("error", f"Wyjątek w wątku łącza: {exc!r}")
                 self._close()
                 self._set_state(ERROR, str(exc))
                 time.sleep(1.0)
@@ -235,10 +235,10 @@ class SerialLink:
             candidates = ([p for p in all_ports if _looks_like_arduino(p)] +
                           [p for p in all_ports if not _looks_like_arduino(p)])
             if not candidates:
-                self._set_state(SCANNING, "Brak portow COM")
+                self._set_state(SCANNING, "Brak portów COM")
                 return
 
-        self._set_state(SCANNING, f"Sprawdzanie {len(candidates)} portow")
+        self._set_state(SCANNING, f"Sprawdzanie {len(candidates)} portów")
 
         for info in candidates:
             if self._stop.is_set() or not self._want_connect:
@@ -263,9 +263,9 @@ class SerialLink:
             self._reset_stats(info.device)
             self._set_state(CONNECTED, info.device)
             self._log("ok", f"{info.device}: {hello.name} fw {hello.firmware}, "
-                            f"{hello.num_buttons} przyciskow, {hello.num_axes} osi")
+                            f"{hello.num_buttons} przycisków, {hello.num_axes} osi")
             if hello.proto != protocol.PROTO_VERSION:
-                self._log("warn", f"Wersja protokolu plytki ({hello.proto}) rozni sie "
+                self._log("warn", f"Wersja protokołu płytki ({hello.proto}) różni się "
                                   f"od aplikacji ({protocol.PROTO_VERSION}) - "
                                   f"zaktualizuj firmware")
             if self._on_hello:
@@ -274,7 +274,7 @@ class SerialLink:
                 self._safe_call(self._on_connected_hook)
             return
 
-        self._set_state(SCANNING, "Nie znaleziono plytki")
+        self._set_state(SCANNING, "Nie znaleziono płytki")
 
     def _open_port(self, device: str) -> Optional[serial.Serial]:
         try:
@@ -355,7 +355,7 @@ class SerialLink:
             self._pending_tx.clear()
         if fault:
             self._close()
-            self._set_state(SCANNING, "Utracono polaczenie")
+            self._set_state(SCANNING, "Utracono połączenie")
             return
 
         try:
@@ -364,7 +364,7 @@ class SerialLink:
         except (serial.SerialException, OSError) as exc:
             self._log("warn", f"Utracono port: {exc}")
             self._close()
-            self._set_state(SCANNING, "Utracono polaczenie")
+            self._set_state(SCANNING, "Utracono połączenie")
             return
 
         now = time.monotonic()
@@ -376,9 +376,9 @@ class SerialLink:
 
         # ------- wykrycie zamilkniecia plytki -------
         if self._last_frame_t and (now - self._last_frame_t) > STALE_TIMEOUT:
-            self._log("warn", "Plytka przestala odpowiadac")
+            self._log("warn", "Płytka przestała odpowiadać")
             self._close()
-            self._set_state(SCANNING, "Brak danych z plytki")
+            self._set_state(SCANNING, "Brak danych z płytki")
             return
 
         # ------- okno statystyk -------
@@ -442,12 +442,12 @@ class SerialLink:
         elif mtype == protocol.MSG_ACK:
             if len(payload) >= 2 and payload[1] == 0:
                 name = protocol.MSG_NAMES.get(payload[0], f"0x{payload[0]:02X}")
-                self._log("warn", f"Plytka odrzucila komende {name}")
+                self._log("warn", f"Płytka odrzuciła komendę {name}")
 
         elif mtype == protocol.MSG_LOG:
             text = payload.decode("ascii", errors="replace").strip()
             if text:
-                self._log("info", f"[plytka] {text}")
+                self._log("info", f"[płytka] {text}")
 
         elif mtype == protocol.MSG_G29_OUT:
             if self._on_g29_out:

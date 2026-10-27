@@ -18,7 +18,7 @@ from .outputs.xinput import XUSB, PadState
 from .protocol import NUM_BUTTONS, StateFrame
 
 #: Kierunki krzyzaka w kolejnosci konfiguracji: gora, prawo, dol, lewo.
-HAT_DIRECTIONS = ("gora", "prawo", "dol", "lewo")
+HAT_DIRECTIONS = ("góra", "prawo", "dół", "lewo")
 
 
 def _clamp01(v: float) -> float:

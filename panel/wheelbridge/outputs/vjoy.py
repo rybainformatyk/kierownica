@@ -32,10 +32,10 @@ VJD_STAT_MISS = 3     # nie istnieje (nie wlaczone w vJoyConf)
 VJD_STAT_UNKN = 4
 
 STATUS_TEXT = {
-    VJD_STAT_OWN: "zajete przez ta aplikacje",
+    VJD_STAT_OWN: "zajęte przez tę aplikację",
     VJD_STAT_FREE: "wolne",
-    VJD_STAT_BUSY: "zajete przez inny program",
-    VJD_STAT_MISS: "nie istnieje - wlacz je w vJoyConf",
+    VJD_STAT_BUSY: "zajęte przez inny program",
+    VJD_STAT_MISS: "nie istnieje - włącz je w vJoyConf",
     VJD_STAT_UNKN: "stan nieznany",
 }
 
@@ -172,12 +172,12 @@ def vjoy_diagnostics() -> Dict[str, object]:
     if dll_path is None:
         info["error"] = (f"Nie znaleziono {_DLL_NAME}. Zainstaluj vJoy "
                          f"(wersja {'x64' if info['python_bits'] == 64 else 'x86'} "
-                         f"musi odpowiadac Pythonowi).")
+                         f"musi odpowiadać Pythonowi).")
         return info
     try:
         api = _VJoyApi(dll_path)
     except Exception as exc:
-        info["error"] = f"Nie udalo sie zaladowac DLL: {exc}"
+        info["error"] = f"Nie udało się załadować DLL: {exc}"
         return info
 
     info["dll_loaded"] = True
@@ -188,7 +188,7 @@ def vjoy_diagnostics() -> Dict[str, object]:
         if ptr:
             info["product"] = ctypes.wstring_at(ptr)
     except Exception as exc:
-        info["error"] = f"Blad odpytywania vJoy: {exc}"
+        info["error"] = f"Błąd odpytywania vJoy: {exc}"
         return info
 
     devices: Dict[int, Dict[str, object]] = {}
@@ -307,9 +307,9 @@ def _get_api() -> _VJoyApi:
         raise VJoyNotAvailable(
             f"Nie znaleziono {_DLL_NAME}.\n\n"
             f"Zainstaluj vJoy (vjoystick na SourceForge), a potem w programie "
-            f"vJoyConf wlacz urzadzenie nr 1 z osiami X, Y, Z, Rx, Ry, Rz, "
-            f"32 przyciskami i wlaczonym Force Feedback.\n\n"
-            f"Uwaga: uzywasz Pythona {bits}, wiec potrzebna jest biblioteka "
+            f"vJoyConf włącz urządzenie nr 1 z osiami X, Y, Z, Rx, Ry, Rz, "
+            f"32 przyciskami i włączonym Force Feedback.\n\n"
+            f"Uwaga: używasz Pythona {bits}, więc potrzebna jest biblioteka "
             f"vJoy w tej samej architekturze."
         )
     key = str(dll_path).lower()
@@ -319,8 +319,8 @@ def _get_api() -> _VJoyApi:
             api = _VJoyApi(dll_path)
         except OSError as exc:
             raise VJoyNotAvailable(
-                f"Nie udalo sie zaladowac {dll_path}:\n{exc}\n\n"
-                f"Najczestsza przyczyna to niezgodnosc architektury "
+                f"Nie udało się załadować {dll_path}:\n{exc}\n\n"
+                f"Najczęstsza przyczyna to niezgodność architektury "
                 f"(Python {'64' if sys.maxsize > 2 ** 32 else '32'}-bit "
                 f"vs. biblioteka vJoy)."
             ) from exc
@@ -355,7 +355,7 @@ class VJoyBackend(OutputBackend):
 
     @property
     def label(self) -> str:
-        return f"vJoy urzadzenie #{self.device_id}"
+        return f"vJoy urządzenie #{self.device_id}"
 
     @property
     def is_open(self) -> bool:
@@ -387,9 +387,9 @@ class VJoyBackend(OutputBackend):
 
         if not api.dll.vJoyEnabled():
             raise VJoyNotAvailable(
-                "Sterownik vJoy jest zainstalowany, ale wylaczony.\n"
-                "Uruchom vJoyConf i wlacz vJoy, albo sprawdz w Menedzerze "
-                "urzadzen, czy 'vJoy Device' nie ma bledu."
+                "Sterownik vJoy jest zainstalowany, ale wyłączony.\n"
+                "Uruchom vJoyConf i włącz vJoy, albo sprawdź w Menedżerze "
+                "urządzeń, czy 'vJoy Device' nie ma błędu."
             )
 
         self._version = int(api.dll.GetvJoyVersion())
@@ -403,24 +403,24 @@ class VJoyBackend(OutputBackend):
         status = api.dll.GetVJDStatus(rid)
         if status == VJD_STAT_MISS:
             raise VJoyNotAvailable(
-                f"Urzadzenie vJoy #{rid} nie istnieje.\n"
-                f"Otworz vJoyConf, zaznacz 'Device {rid}' i kliknij Apply."
+                f"Urządzenie vJoy #{rid} nie istnieje.\n"
+                f"Otwórz vJoyConf, zaznacz 'Device {rid}' i kliknij Apply."
             )
         if status == VJD_STAT_BUSY:
             raise VJoyNotAvailable(
-                f"Urzadzenie vJoy #{rid} jest zajete przez inny program.\n"
-                f"Zamknij pozostale aplikacje korzystajace z vJoy "
+                f"Urządzenie vJoy #{rid} jest zajęte przez inny program.\n"
+                f"Zamknij pozostałe aplikacje korzystające z vJoy "
                 f"(np. drugie okno tego panelu, x360ce, FreePIE)."
             )
         if status not in (VJD_STAT_FREE, VJD_STAT_OWN):
             raise VJoyNotAvailable(
-                f"Urzadzenie vJoy #{rid}: {STATUS_TEXT.get(status, status)}"
+                f"Urządzenie vJoy #{rid}: {STATUS_TEXT.get(status, status)}"
             )
 
         if not api.dll.AcquireVJD(rid):
             raise VJoyNotAvailable(
-                f"Nie udalo sie przejac urzadzenia vJoy #{rid}. "
-                f"Sprobuj uruchomic panel jako administrator."
+                f"Nie udało się przejąć urządzenia vJoy #{rid}. "
+                f"Spróbuj uruchomić panel jako administrator."
             )
 
         self._api = api

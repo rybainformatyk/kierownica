@@ -60,11 +60,11 @@ ET_FRCTN = 11
 ET_CSTM = 12
 
 EFFECT_NAMES = {
-    ET_NONE: "-", ET_CONST: "Stala sila", ET_RAMP: "Narastanie",
-    ET_SQR: "Prostokat", ET_SINE: "Sinus", ET_TRNGL: "Trojkat",
-    ET_STUP: "Pila w gore", ET_STDN: "Pila w dol", ET_SPRNG: "Sprezyna",
-    ET_DMPR: "Tlumienie", ET_INRT: "Bezwladnosc", ET_FRCTN: "Tarcie",
-    ET_CSTM: "Wlasny",
+    ET_NONE: "-", ET_CONST: "Stała siła", ET_RAMP: "Narastanie",
+    ET_SQR: "Prostokąt", ET_SINE: "Sinus", ET_TRNGL: "Trójkąt",
+    ET_STUP: "Piła w górę", ET_STDN: "Piła w dół", ET_SPRNG: "Sprężyna",
+    ET_DMPR: "Tłumienie", ET_INRT: "Bezwładność", ET_FRCTN: "Tarcie",
+    ET_CSTM: "Własny",
 }
 
 # operacje na efekcie (FFBOP)
@@ -271,7 +271,7 @@ class FfbManager:
         if self._registered:
             return True
         if api is None or not getattr(api, "has_ffb_api", False):
-            self._log("warn", "Ta wersja vJoyInterface.dll nie udostepnia API FFB")
+            self._log("warn", "Ta wersja vJoyInterface.dll nie udostępnia API FFB")
             return False
         self._api = api
         self._device_id = int(device_id)
@@ -281,11 +281,11 @@ class FfbManager:
             api.dll.FfbRegisterGenCB(
                 ctypes.cast(self._cb, ctypes.c_void_p), None)
         except Exception as exc:
-            self._log("error", f"Nie udalo sie podlaczyc FFB: {exc}")
+            self._log("error", f"Nie udało się podłączyć FFB: {exc}")
             self._cb = None
             return False
         self._registered = True
-        self._log("ok", "Odbior Force Feedback z gier aktywny")
+        self._log("ok", "Odbiór Force Feedback z gier aktywny")
         return True
 
     def unregister(self) -> None:

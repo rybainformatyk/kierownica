@@ -55,6 +55,11 @@ class Fonts:
         if mono not in available:
             mono = "Courier New" if "Courier New" in available else "TkFixedFont"
 
+        # Ikony zakladek: czcionka systemowa Windows 11, a na Windows 10 jej
+        # poprzedniczka o tych samych kodach. Bez nich - same napisy.
+        self.icons = next((f for f in ("Segoe Fluent Icons", "Segoe MDL2 Assets")
+                           if f in available), "")
+
         self.family = family
         self.base = (family, 10)
         self.small = (family, 9)
@@ -148,9 +153,8 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
 
     # ---- notatnik ----
     #
-    # Zakladki rysujemy sami (widgets.TabBar), a notatnik tylko przelacza
-    # strony - pusty uklad zakladki usuwa systemowy pasek, ktory inaczej
-    # zostalby nad naszym.
+    # Okno glowne ma wlasne zakladki (widgets.TabBar + widgets.Pages); styl
+    # z pustym ukladem zakladki zostaje dla notatnikow bez systemowego paska.
     style.configure("TNotebook", background=BG, borderwidth=0,
                     tabmargins=(0, 0, 0, 0))
     style.configure("Hidden.TNotebook", background=BG, borderwidth=0,
@@ -214,6 +218,22 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
                     arrowsize=12, width=11)
     style.map("Horizontal.TScrollbar",
               background=[("active", "#3e4a60"), ("pressed", ACCENT_DIM)])
+
+    # Waski pasek bez strzalek - sam uchwyt na ciemnym rowku.
+    try:
+        style.layout("Slim.Vertical.TScrollbar", [
+            ("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                ("Vertical.Scrollbar.thumb", {"expand": "1",
+                                              "sticky": "nswe"})]})])
+    except tk.TclError:
+        pass
+    style.configure("Slim.Vertical.TScrollbar", background=ELEV,
+                    troughcolor=BG, bordercolor=BG, lightcolor=ELEV,
+                    darkcolor=ELEV, relief="flat", gripcount=0, width=8)
+    style.map("Slim.Vertical.TScrollbar",
+              background=[("pressed", ACCENT_DIM), ("active", "#3e4a60")],
+              lightcolor=[("pressed", ACCENT_DIM), ("active", "#3e4a60")],
+              darkcolor=[("pressed", ACCENT_DIM), ("active", "#3e4a60")])
 
     style.configure("TSpinbox", fieldbackground=PANEL_HI, foreground=TEXT,
                     bordercolor=BORDER, arrowcolor=TEXT_DIM, padding=(6, 3))
