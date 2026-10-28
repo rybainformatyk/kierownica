@@ -22,7 +22,8 @@ from ..config import (AppConfig, G29_CONTROL_LABELS, G29_CONTROLS,
                       config_path)
 from ..engine import WheelEngine
 from ..ffb import DIRECTION_LABELS, DIRECTION_MODES
-from ..processing import HAT_DIRECTIONS, build_g29_report, g29_active
+from ..processing import (HAT_DIRECTIONS, build_g29_report, g29_active,
+                          pedal_curve, pedal_position, steer_curve)
 from ..link import list_ports
 from ..outputs import VJoyBackend, vjoy_diagnostics
 from ..outputs.vjoy import AXIS_LABELS
@@ -32,16 +33,24 @@ from .padview import CONTROLS as PAD_CONTROLS
 from .padview import PadView
 from .g29tab import G29Tab
 from .theme import Fonts, apply_theme
-from .widgets import (BarMeter, ButtonGrid, Card, HatIndicator, LabeledSlider,
-                      Pages, ScrollableFrame, Sparkline, StatRow, StatusDot,
-                      TabBar, TorqueMeter, WheelDial, configure_if_changed,
+from .widgets import (OFFLINE_LIVE, BarMeter, ButtonGrid, Card, CurvePlot,
+                      HatIndicator, LabeledSlider, Pages, PedalGauge,
+                      PopupMenu,
+                      ScrollableFrame, Sparkline, StatRow, StatusDot, TabBar,
+                      TorqueMeter, WheelDial, configure_if_changed, fit_wrap,
                       round_corners)
 
 APP_TITLE = "Panel kierownicy"
-APP_VERSION = "2.3"
+APP_VERSION = "2.4"
 VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
 
 RANGE_PRESETS = (120, 270, 360, 540, 720, 900, 1080)
+
+#: Kolor kazdego pedalu - ten sam na pulpicie i w zakladce Pedaly.
+PEDAL_COLORS = {"throttle": theme.GOOD, "brake": theme.BAD,
+                "clutch": theme.WARN, "aux1": theme.ACCENT,
+                "aux2": theme.ACCENT, "aux3": theme.ACCENT}
+SAVE_HINT = "Ctrl+S"
 
 #: Nazwy zakladek - w tej samej kolejnosci co stale TAB_* ponizej.
 TAB_NAMES = ("Pulpit", "Kierownica", "Pedały", "Przyciski", "G29", "Pad",
@@ -245,6 +254,13 @@ class PanelApp:
 
         self._build_statusbar(root)
 
+        # skroty: zapis i przejscie do zakladki (Ctrl+1 = Pulpit ...)
+        self.root.bind("<Control-s>", lambda _e: self._save_config())
+        self.root.bind("<Control-S>", lambda _e: self._save_config())
+        for i in range(len(TAB_NAMES)):
+            self.root.bind(f"<Control-Key-{i + 1}>",
+                           lambda _e, i=i: self._go_tab(i))
+
     def _go_tab(self, index: int) -> None:
         self.nb.select(index)
 
@@ -261,6 +277,10 @@ class PanelApp:
         g29 = getattr(self, "g29tab", None)
         if g29 is not None and index != self.TAB_G29:
             g29.stop()
+        # Nauka trwala dalej na innej zakladce: przycisk wcisniety np. na
+        # Pulpicie po cichu trafial do pada. Tak samo jak w zakladce G29.
+        if getattr(self, "pad_view", None) is not None and index != self.TAB_PAD:
+            self._pad_stop_learning()
 
     # ------------------------------------------------------------- naglowek
 
@@ -294,7 +314,8 @@ class PanelApp:
                  pady=2).pack(side="left", padx=(10, 0), pady=(4, 0))
 
         right = tk.Frame(inner, bg=theme.PANEL)
-        right.pack(side="right")
+        # odstep od tytulu zostaje takze w waskim oknie
+        right.pack(side="right", padx=(16, 0))
 
         # --- stan lacza i wyjscia: jeden kafelek, dwa wiersze ---
         status = tk.Frame(right, bg=theme.PANEL_HI, highlightthickness=1,
@@ -323,19 +344,22 @@ class PanelApp:
         self.lbl_vjoy.pack(side="left")
 
         # --- wybor portu ---
+        # Gdy okno jest waskie, pack sciska to, co ulozone na koncu. Przyciski
+        # ukladamy wiec pierwsze (od prawej), a lista portow idzie ostatnia -
+        # skraca sie ona, a nie "Polacz" (wczesniej znikal do paska).
         ctl = tk.Frame(right, bg=theme.PANEL)
         ctl.pack(side="right")
+        self.btn_connect = ttk.Button(ctl, text="Połącz", style="Accent.TButton",
+                                      command=self._toggle_connect)
+        self.btn_connect.pack(side="right")
+        ttk.Button(ctl, text="Odśwież", style="Ghost.TButton",
+                   command=self._refresh_ports).pack(side="right", padx=(0, 7))
         tk.Label(ctl, text="PORT", bg=theme.PANEL, fg=theme.MUTED,
                  font=self.fonts.tiny_bold).pack(side="left", padx=(0, 8))
         self.port_var = tk.StringVar()
         self.port_combo = ttk.Combobox(ctl, textvariable=self.port_var, width=30,
                                        state="readonly")
         self.port_combo.pack(side="left", padx=(0, 7))
-        ttk.Button(ctl, text="Odśwież", style="Ghost.TButton",
-                   command=self._refresh_ports).pack(side="left", padx=(0, 7))
-        self.btn_connect = ttk.Button(ctl, text="Połącz", style="Accent.TButton",
-                                      command=self._toggle_connect)
-        self.btn_connect.pack(side="left")
 
         self._refresh_ports()
 
@@ -351,7 +375,7 @@ class PanelApp:
 
         card = Card(left, "Kierownica", self.fonts)
         card.place_card(fill="x")
-        self.dial = WheelDial(card.body, self.fonts, size=258)
+        self.dial = WheelDial(card.body, self.fonts, size=240)
         self.dial.pack()
         self.dial.set_range(self.cfg.steer.range_deg)
 
@@ -391,15 +415,15 @@ class PanelApp:
 
         ped = Card(right, "Pedały i osie pomocnicze", self.fonts)
         ped.grid_card(row=0, column=0, sticky="ew")
-        self.dash_bars: Dict[str, BarMeter] = {}
-        colors = {"throttle": theme.GOOD, "brake": theme.BAD,
-                  "clutch": theme.WARN, "aux1": theme.ACCENT,
-                  "aux2": theme.ACCENT, "aux3": theme.ACCENT}
-        for key in PEDAL_KEYS:
-            bar = BarMeter(ped.body, self.fonts, PEDAL_LABELS[key],
-                           color=colors.get(key, theme.ACCENT), height=14)
-            bar.pack(fill="x", pady=2)
-            self.dash_bars[key] = bar
+        gauges = ttk.Frame(ped.body, style="Card.TFrame")
+        gauges.pack(fill="x")
+        self.dash_bars: Dict[str, PedalGauge] = {}
+        for i, key in enumerate(PEDAL_KEYS):
+            gauge = PedalGauge(gauges, self.fonts, PEDAL_LABELS[key],
+                               color=PEDAL_COLORS[key])
+            gauge.grid(row=0, column=i, sticky="n")
+            gauges.grid_columnconfigure(i, weight=1, uniform="gauge")
+            self.dash_bars[key] = gauge
 
         btn_card = Card(right, "Przyciski", self.fonts)
         btn_card.grid_card(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -412,17 +436,20 @@ class PanelApp:
         ttk.Label(hat_box, text="Krzyżak", style="Muted.TLabel").pack()
         self.hat_indicator = HatIndicator(hat_box, 72)
         self.hat_indicator.pack()
-        self.lbl_dash_out = ttk.Label(btn_card.body, text="", style="Dim.TLabel",
-                                      wraplength=560, justify="left")
+        self.lbl_dash_out = fit_wrap(ttk.Label(
+            btn_card.body, text="", style="Dim.TLabel", wraplength=560,
+            justify="left"))
         self.lbl_dash_out.pack(anchor="w", pady=(8, 0))
 
         out_card = Card(right, "Wyjście do gier", self.fonts)
         out_card.grid_card(row=2, column=0, sticky="ew", pady=(10, 0))
-        self.lbl_output = ttk.Label(out_card.body, text="-", style="Dim.TLabel",
-                                    wraplength=560, justify="left")
+        self.lbl_output = fit_wrap(ttk.Label(
+            out_card.body, text="-", style="Dim.TLabel", wraplength=560,
+            justify="left"))
         self.lbl_output.pack(anchor="w")
-        self.lbl_output_hint = ttk.Label(out_card.body, text="", style="Warn.TLabel",
-                                         wraplength=560, justify="left")
+        self.lbl_output_hint = fit_wrap(ttk.Label(
+            out_card.body, text="", style="Warn.TLabel", wraplength=560,
+            justify="left"))
         self.lbl_output_hint.pack(anchor="w", pady=(6, 0))
 
         torq = ttk.Frame(out_card.body, style="Card.TFrame")
@@ -465,14 +492,19 @@ class PanelApp:
                    command=self._apply_cpr).pack(side="left", padx=6)
         ttk.Button(row, text="Wykryj automatycznie", style="Small.TButton",
                    command=self._detect_cpr).pack(side="left")
-        ttk.Label(c1.body, style="Muted.TLabel", wraplength=330, justify="left",
-                  text="Wykrywanie: ustaw środek, przekręć kierownicę do jednego "
-                       "oporu, potem do drugiego i kliknij przycisk. Aplikacja "
-                       "policzy impulsy z przejechanego zakresu.").pack(anchor="w")
+        fit_wrap(ttk.Label(
+            c1.body, style="Muted.TLabel", wraplength=330, justify="left",
+            text="Wykrywanie: ustaw środek, przekręć kierownicę do jednego "
+                 "oporu, potem do drugiego i kliknij przycisk. Aplikacja "
+                 "policzy impulsy z przejechanego zakresu.")).pack(anchor="w")
 
         # --- krzywa i filtr ---
         c2 = Card(body, "Charakterystyka", self.fonts)
         c2.grid_card(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 10))
+
+        self.steer_plot = CurvePlot(c2.body, self.fonts, height=104,
+                                    bipolar=True)
+        self.steer_plot.pack(fill="x", pady=(0, 10))
 
         self.sl_lin = LabeledSlider(
             c2.body, self.fonts, "Liniowość", 0.4, 2.5,
@@ -548,8 +580,8 @@ class PanelApp:
                    command=self._calib_apply_all).pack(side="left", padx=8)
         ttk.Button(hrow, text="Przywróć pełny zakres", style="Small.TButton",
                    command=self._calib_reset).pack(side="left")
+        # pokazywana dopiero z trescia - pusta zostawiala dziure w karcie
         self.lbl_calib = ttk.Label(head.body, text="", style="Dim.TLabel")
-        self.lbl_calib.pack(anchor="w", pady=(8, 0))
 
         for i, key in enumerate(PEDAL_KEYS):
             card = Card(body, PEDAL_LABELS[key], self.fonts)
@@ -582,9 +614,16 @@ class PanelApp:
                  lambda _e, k=key, v=var_axis: self._on_pedal_axis(k, v))
         w["axis"] = var_axis
 
+        plot = CurvePlot(card.body, self.fonts, height=104,
+                         color=PEDAL_COLORS[key],
+                         captions=("0 %", "wciśnięcie pedału → wyjście do gry",
+                                   "100 %"))
+        plot.pack(fill="x", pady=(10, 0))
+        w["plot"] = plot
+
         bar = BarMeter(card.body, self.fonts, "Wartość wyjściowa",
-                       color=theme.GOOD if key == "throttle" else theme.ACCENT)
-        bar.pack(fill="x", pady=(10, 2))
+                       color=PEDAL_COLORS[key])
+        bar.pack(fill="x", pady=(6, 2))
         w["bar"] = bar
 
         w["range"] = StatRow(card.body, self.fonts, "Zakres surowy")
@@ -652,12 +691,12 @@ class PanelApp:
         self.lbl_btn_live.pack(anchor="w", pady=(8, 0))
         self.lbl_btn_out = ttk.Label(info.body, text="", style="Good.TLabel")
         self.lbl_btn_out.pack(anchor="w")
-        ttk.Label(info.body, style="Muted.TLabel", wraplength=820, justify="left",
-                  text="Kolumna NC odwraca logikę przycisku - dla styków "
-                       "normalnie zwartych (zwarty = puszczony). Diody i wiersz "
-                       "'Wciśnięte teraz' pokazują stan JUŻ po odwróceniu, więc "
-                       "efekt widać od razu."
-                  ).pack(anchor="w", pady=(6, 0))
+        fit_wrap(ttk.Label(
+            info.body, style="Muted.TLabel", wraplength=820, justify="left",
+            text="Kolumna NC odwraca logikę przycisku - dla styków "
+                 "normalnie zwartych (zwarty = puszczony). Diody i wiersz "
+                 "'Wciśnięte teraz' pokazują stan JUŻ po odwróceniu, więc "
+                 "efekt widać od razu."), cap=820).pack(anchor="w", pady=(6, 0))
 
         hat = Card(body, "Krzyżak (POV)", self.fonts,
                      wrap=820,
@@ -783,9 +822,9 @@ class PanelApp:
 
         # Ostrzezenia pokazujemy tylko wtedy, gdy jest co powiedziec - pusta
         # etykieta zjadalaby wiersz, a zakladka jest wypelniona co do piksela.
-        self.lbl_pad_conflict = ttk.Label(view.body, text="",
-                                          style="Warn.TLabel",
-                                          wraplength=1080, justify="left")
+        self.lbl_pad_conflict = fit_wrap(ttk.Label(
+            view.body, text="", style="Warn.TLabel", wraplength=1080,
+            justify="left"), cap=1080)
 
         holder = ttk.Frame(view.body, style="Card.TFrame")
         holder.pack(fill="x")
@@ -794,7 +833,8 @@ class PanelApp:
                                 on_assign_request=self._on_pad_assign_request,
                                 on_clear=self._on_pad_clear,
                                 on_axis_click=self._on_pad_axis_click,
-                                on_axis_clear=self._on_pad_axis_clear)
+                                on_axis_clear=self._on_pad_axis_clear,
+                                on_cancel=self._on_pad_user_cancel)
         self.pad_view.pack(fill="x")
         self.root.bind("<Escape>", lambda _e: self._on_escape())
 
@@ -863,11 +903,12 @@ class PanelApp:
         prof_box.pack(side="left", padx=(10, 0))
         prof_box.bind("<<ComboboxSelected>>", lambda _e: self._on_pad_profile())
 
-        ttk.Label(right, style="Muted.TLabel", wraplength=520, justify="left",
-                  text="Profil ustawia tylko skalowanie skrętu i pedałów pod "
-                       "daną grę. Przypisania przycisków i kierunków zostają "
-                       "nietknięte - zmiana profilu ich nie rusza."
-                  ).pack(anchor="w", pady=(8, 0))
+        fit_wrap(ttk.Label(
+            right, style="Muted.TLabel", wraplength=520, justify="left",
+            text="Profil ustawia tylko skalowanie skrętu i pedałów pod "
+                 "daną grę. Przypisania przycisków i kierunków zostają "
+                 "nietknięte - zmiana profilu ich nie rusza."
+        )).pack(anchor="w", pady=(8, 0))
 
         self.sl_pad_trig = LabeledSlider(
             right, self.fonts, "Kompensacja martwej strefy spustów", 0.0, 0.60,
@@ -884,17 +925,19 @@ class PanelApp:
                         command=self._on_pad_invert).pack(anchor="w",
                                                           pady=(10, 0))
 
-        ttk.Label(right, style="Muted.TLabel", wraplength=520, justify="left",
-                  text="Spusty Xboxa mają 8 bitów (0-255), więc pedały są tu "
-                       "mniej precyzyjne niż w trybie kierownicy. To "
-                       "ograniczenie XInputa, nie aplikacji."
-                  ).pack(anchor="w", pady=(8, 0))
-        ttk.Label(right, style="Muted.TLabel", wraplength=520, justify="left",
-                  text="Forza, NFS Unbound i inne gry z obsługą kierownic "
-                       "najlepiej działają w trybie Kierownica G29 - widzą "
-                       "wtedy prawdziwą kierownicę i ustawienia pada nie są "
-                       "potrzebne. Tryb pada zostaw dla gier bez kierownic."
-                  ).pack(anchor="w", pady=(8, 0))
+        fit_wrap(ttk.Label(
+            right, style="Muted.TLabel", wraplength=520, justify="left",
+            text="Spusty Xboxa mają 8 bitów (0-255), więc pedały są tu "
+                 "mniej precyzyjne niż w trybie kierownicy. To "
+                 "ograniczenie XInputa, nie aplikacji."
+        )).pack(anchor="w", pady=(8, 0))
+        fit_wrap(ttk.Label(
+            right, style="Muted.TLabel", wraplength=520, justify="left",
+            text="Forza, NFS Unbound i inne gry z obsługą kierownic "
+                 "najlepiej działają w trybie Kierownica G29 - widzą "
+                 "wtedy prawdziwą kierownicę i ustawienia pada nie są "
+                 "potrzebne. Tryb pada zostaw dla gier bez kierownic."
+        )).pack(anchor="w", pady=(8, 0))
 
 
     # ------------------------------------------------------- force feedback
@@ -919,8 +962,9 @@ class PanelApp:
         ttk.Checkbutton(warn.body, text="Włącz Force Feedback",
                         variable=self.var_ffb_on,
                         command=self._on_ffb_toggle).pack(anchor="w")
-        self.lbl_ffb_state = ttk.Label(warn.body, text="", style="Dim.TLabel",
-                                       wraplength=820, justify="left")
+        self.lbl_ffb_state = fit_wrap(ttk.Label(
+            warn.body, text="", style="Dim.TLabel", wraplength=820,
+            justify="left"), cap=820)
         self.lbl_ffb_state.pack(anchor="w", pady=(6, 0))
 
         live = ttk.Frame(warn.body, style="Card.TFrame")
@@ -1010,10 +1054,11 @@ class PanelApp:
                           width=36)
         cb.pack(anchor="w", pady=(3, 0))
         cb.bind("<<ComboboxSelected>>", lambda _e: self._on_dir_mode())
-        ttk.Label(c3.body, style="Muted.TLabel", wraplength=330, justify="left",
-                  text="Gry różnie kodują kierunek siły. Jeśli FFB działa "
-                       "odwrotnie albo tylko w jedną stronę, zmień ten tryb."
-                  ).pack(anchor="w", pady=(4, 0))
+        fit_wrap(ttk.Label(
+            c3.body, style="Muted.TLabel", wraplength=330, justify="left",
+            text="Gry różnie kodują kierunek siły. Jeśli FFB działa "
+                 "odwrotnie albo tylko w jedną stronę, zmień ten tryb."
+        )).pack(anchor="w", pady=(4, 0))
 
         # --- mostek H ---
         c4 = Card(body, "Mostek H i bezpieczeństwo", self.fonts)
@@ -1150,16 +1195,15 @@ class PanelApp:
             ttk.Label(table, text=why, style="Muted.TLabel", wraplength=560,
                       justify="left").grid(row=row, column=3, sticky="w",
                                            pady=3)
-        ttk.Label(c25.body, style="Muted.TLabel", wraplength=1040,
-                  justify="left",
-                  text="Force Feedback z gry działa tylko w trybie vJoy - "
+        fit_wrap(ttk.Label(
+            c25.body, style="Muted.TLabel", wraplength=1040, justify="left",
+            text="Force Feedback z gry działa tylko w trybie vJoy - "
                        "tamta droga idzie HID PID przez sterownik vJoy. W "
                        "trybie G29 gra wysyła FFB do sterownika Logitecha, "
                        "którego tu nie ma, a w trybie pada XInput w ogóle nie "
                        "ma kanału zwrotnego. W obu zostają efekty wyliczane "
                        "lokalnie (sprężyna, tłumienie, tarcie) z zakładki "
-                       "Force Feedback."
-                  ).pack(anchor="w", pady=(10, 0))
+                 "Force Feedback."), cap=1040).pack(anchor="w", pady=(10, 0))
 
         # --- dziennik ---
         c3 = Card(parent, "Dziennik", self.fonts)
@@ -1202,16 +1246,16 @@ class PanelApp:
                         variable=self.var_g29_inv,
                         command=self._on_g29_invert).pack(anchor="w",
                                                           pady=(8, 0))
-        ttk.Label(card.body, style="Muted.TLabel", wraplength=600,
-                  justify="left",
-                  text="Podłącz dwa kable: Programming Port (łącze z tą "
-                       "aplikacją) i Native USB (kierownica dla gier). Gdy "
-                       "aplikacja jest zamknięta, G29 stoi w pozycji "
-                       "spoczynkowej - kalibrację i mapowanie liczy tylko ona."
-                  ).pack(anchor="w", pady=(8, 0))
-        ttk.Label(card.body, style="Muted.TLabel", wraplength=600,
-                  justify="left", text=G29_BUTTON_HELP
-                  ).pack(anchor="w", pady=(6, 0))
+        fit_wrap(ttk.Label(
+            card.body, style="Muted.TLabel", wraplength=600, justify="left",
+            text="Podłącz dwa kable: Programming Port (łącze z tą "
+                 "aplikacją) i Native USB (kierownica dla gier). Gdy "
+                 "aplikacja jest zamknięta, G29 stoi w pozycji "
+                 "spoczynkowej - kalibrację i mapowanie liczy tylko ona."
+        )).pack(anchor="w", pady=(8, 0))
+        fit_wrap(ttk.Label(
+            card.body, style="Muted.TLabel", wraplength=600, justify="left",
+            text=G29_BUTTON_HELP)).pack(anchor="w", pady=(6, 0))
 
     def _refresh_g29_card(self, connected: bool) -> None:
         st = self.engine.status
@@ -1219,7 +1263,7 @@ class PanelApp:
         if not connected:
             for r in rows.values():
                 r.set("-", theme.MUTED)
-            self.lbl_g29_report.configure(text="")
+            self.lbl_g29_report.configure(text="raport: -")
             return
         rows["fw"].set("tak" if st.g29_fw else "nie - wgraj firmware 2.1",
                        theme.GOOD if st.g29_fw else theme.BAD)
@@ -1241,7 +1285,7 @@ class PanelApp:
         rows["game"].set(game)
         rep = self.engine.last_g29 if self.cfg.output.g29_on else None
         self.lbl_g29_report.configure(
-            text=("raport: " + rep.hex(" ")) if rep else "")
+            text=("raport: " + rep.hex(" ")) if rep else "raport: -")
 
     def _on_g29_invert(self) -> None:
         self.cfg.g29.pedals_inverted = bool(self.var_g29_inv.get())
@@ -1252,11 +1296,18 @@ class PanelApp:
         tk.Frame(parent, bg=theme.BORDER, height=1).pack(fill="x", pady=(12, 0))
         bar = tk.Frame(parent, bg=theme.BG)
         bar.pack(fill="x", pady=(10, 0))
-        self.lbl_status = tk.Label(bar, text="", bg=theme.BG, fg=theme.MUTED,
-                                   font=self.fonts.small, anchor="w")
-        self.lbl_status.pack(side="left")
+        # Przycisk ukladamy pierwszy: przy waskim oknie i dlugiej sciezce do
+        # konfiguracji pack sciskal ostatni element - i znikal "Zapisz".
         ttk.Button(bar, text="Zapisz ustawienia", style="Accent.TButton",
                    command=self._save_config).pack(side="right")
+        # skrot klawiszowy, a po zapisie - potwierdzenie na kilka sekund
+        self.lbl_saved = tk.Label(bar, text=SAVE_HINT, bg=theme.BG,
+                                  fg=theme.MUTED, font=self.fonts.small)
+        self.lbl_saved.pack(side="right", padx=(0, 12))
+        self._saved_token = 0
+        self.lbl_status = tk.Label(bar, text="", bg=theme.BG, fg=theme.MUTED,
+                                   font=self.fonts.small, anchor="w")
+        self.lbl_status.pack(side="left", fill="x", expand=True)
 
     # ================================================== obsluga interfejsu
 
@@ -1385,7 +1436,7 @@ class PanelApp:
 
     def _calib_start(self) -> None:
         self.engine.reset_raw_tracking()
-        self.lbl_calib.configure(
+        self._set_calib_text(
             text="Nasłuchiwanie... wciśnij każdy pedał do końca i puść, "
                  "potem kliknij 'Zapisz zakresy'.")
         self._log("info", "Rozpoczęto nasłuchiwanie kalibracji pedałów")
@@ -1404,9 +1455,14 @@ class PanelApp:
             self._log("ok", "Zapisano kalibrację: " + ", ".join(ok))
         if skipped:
             self._log("warn", "Za mały zakres, pominięto: " + ", ".join(skipped))
-        self.lbl_calib.configure(
+        self._set_calib_text(
             text=f"Zapisano: {', '.join(ok) if ok else 'nic'}"
                  + (f" | pominięto: {', '.join(skipped)}" if skipped else ""))
+
+    def _set_calib_text(self, text: str) -> None:
+        self.lbl_calib.configure(text=text)
+        if not self.lbl_calib.winfo_manager():
+            self.lbl_calib.pack(anchor="w", pady=(8, 0))
 
     def _calib_reset(self) -> None:
         for key in PEDAL_KEYS:
@@ -1588,26 +1644,21 @@ class PanelApp:
     def _on_pad_axis_click(self, direction: str, x_root: int,
                            y_root: int) -> None:
         current = self.cfg.pad.axes.get(direction, "")
-        menu = tk.Menu(self.root, tearoff=0, bg=theme.PANEL_HI, fg=theme.TEXT,
-                       activebackground=theme.ACCENT, activeforeground="#08121c",
-                       bd=0, relief="flat")
-        menu.add_command(
-            label=f"  {PAD_DIRECTION_LABELS.get(direction, direction)}",
-            state="disabled")
-        menu.add_separator()
+        menu = PopupMenu(self.root, self.fonts,
+                         title=PAD_DIRECTION_LABELS.get(direction,
+                                                        direction).upper())
         for key, label in self.PAD_SOURCES:
-            mark = "\u2713 " if key == current else "    "
-            extra = "" if self._pad_source_available(key) else "  (kanał wyłączony)"
-            menu.add_command(
-                label=mark + label + extra,
-                command=lambda k=key: self._set_pad_axis_source(direction, k))
+            menu.add(label,
+                     command=lambda k=key: self._set_pad_axis_source(direction, k),
+                     checked=key == current,
+                     note="" if self._pad_source_available(key)
+                     else "kanał wyłączony")
         menu.add_separator()
-        menu.add_command(label="    Nie używaj",
-                         command=lambda: self._set_pad_axis_source(direction, ""))
-        try:
-            menu.tk_popup(x_root, y_root)
-        finally:
-            menu.grab_release()
+        menu.add("Nie używaj",
+                 command=lambda: self._set_pad_axis_source(direction, ""),
+                 checked=not current)
+        self._pad_menu = menu
+        menu.popup(x_root, y_root)
 
     def _on_pad_axis_clear(self, direction: str) -> None:
         self._set_pad_axis_source(direction, "")
@@ -1616,7 +1667,7 @@ class PanelApp:
         """Komunikat w linii pod naglowkiem, ktorego nie zasloni od razu
         podglad aktywnych przyciskow (odswiezany 30 razy na sekunde)."""
         self._pad_notice_until = time.monotonic() + seconds
-        self.lbl_pad_live.configure(text=text)
+        self.lbl_pad_live.configure(text=text, style="Good.TLabel")
 
     def _on_escape(self) -> None:
         try:
@@ -1630,15 +1681,32 @@ class PanelApp:
 
     def _pad_escape(self) -> None:
         """Esc konczy kreator, a poza nim tylko anuluje pojedyncza nauke."""
+        self._pad_stop_learning()
+
+    def _pad_stop_learning(self) -> None:
+        """Konczy kreator albo pojedyncza nauke - Esc i wyjscie z zakladki."""
         if self._pad_wizard:
             self._pad_wizard_stop()
         else:
             self.pad_view.cancel_learning()
 
+    def _on_pad_user_cancel(self) -> None:
+        """Klik obok kontrolki przerwal nauke. Kreator bez celu wisial:
+        przyciski Wstecz/Pomin zostawaly, a wciskanie niczego nie robilo."""
+        if self._pad_wizard:
+            self._pad_wizard_stop()
+
     def _on_pad_assign_request(self, control: str) -> None:
         self.nb.select(self.TAB_PAD)
         self.g29tab.stop()
         if self._pad_wizard:
+            # Klik w inna kontrolke w trakcie kreatora: kreator idzie za nim,
+            # inaczej po przypisaniu skakal do kroku za poprzednim celem.
+            if (control in self._pad_wizard
+                    and self._pad_wizard[self._pad_wizard_i] != control):
+                self._pad_wizard_i = self._pad_wizard.index(control)
+                self.pad_view.set_wizard(self._pad_wizard_i + 1,
+                                         len(self._pad_wizard))
             # w kreatorze biezacy krok widac w podpowiedzi nad rysunkiem,
             # wiec ta linia zostaje na potwierdzeniu poprzedniego kroku
             return
@@ -1949,6 +2017,18 @@ class PanelApp:
             messagebox.showerror("Zapis ustawień", str(exc), parent=self.root)
             return
         self._log("ok", f"Ustawienia zapisane: {path}")
+        # Wpis w dzienniku widac tylko w Diagnostyce - tu potwierdzenie
+        # stoi obok przycisku, ktory sie kliknelo.
+        self._saved_token += 1
+        token = self._saved_token
+        self.lbl_saved.configure(text="✓ Zapisano " + time.strftime("%H:%M:%S"),
+                                 fg=theme.GOOD)
+
+        def restore() -> None:
+            if token == self._saved_token and not self._closing:
+                self.lbl_saved.configure(text=SAVE_HINT, fg=theme.MUTED)
+
+        self.root.after(4000, restore)
 
     def _on_close(self) -> None:
         if self._closing:
@@ -2073,10 +2153,10 @@ class PanelApp:
                 self.row_counts.set(f"{state_obj.raw_counts:+d}")
                 self.row_axis.set(f"{state_obj.steer_axis:+.3f}")
                 self.row_velocity.set(f"{state_obj.steer_velocity:+.0f} st/s")
-                for key, bar in self.dash_bars.items():
+                for key, gauge in self.dash_bars.items():
                     src = self.cfg.pedals[key].source
                     raw = state_obj.raw_axes[src] if 0 <= src < len(state_obj.raw_axes) else None
-                    bar.set(state_obj.pedals[key], raw)
+                    gauge.set(state_obj.pedals[key], raw, src >= 0)
                 # Pokazujemy stan PO odwroceniu (NC) - inaczej kolumna NC
                 # wygladalaby, jakby nic nie robila.
                 self.button_grid.set_mask(state_obj.buttons_effective)
@@ -2087,8 +2167,8 @@ class PanelApp:
                 self.button_grid.set_mask(0)
                 self.hat_indicator.set(-1)
                 set_(self.lbl_dash_out, text="")
-                for bar in self.dash_bars.values():
-                    bar.set(0.0, None)
+                for key, gauge in self.dash_bars.items():
+                    gauge.set(0.0, None, self.cfg.pedals[key].source >= 0)
                 self.row_counts.set("-")
                 self.row_axis.set("-")
                 self.row_velocity.set("-")
@@ -2122,7 +2202,11 @@ class PanelApp:
                            if (mask >> i) & 1]
                 set_(self.lbl_btn_live,
                      text="Wciśnięte teraz: " + (", ".join(pressed) if pressed else "brak"))
-                set_(self.lbl_btn_out, text=self._output_buttons_text(state_obj)[0])
+                set_(self.lbl_btn_out, text=self._output_buttons_text(state_obj)[0],
+                     style="Good.TLabel")
+            else:
+                set_(self.lbl_btn_live, text="Wciśnięte teraz: -")
+                set_(self.lbl_btn_out, text=OFFLINE_LIVE, style="Muted.TLabel")
 
         # --- force feedback ---
         if tab == self.TAB_FFB:
@@ -2170,10 +2254,35 @@ class PanelApp:
                     w["seen"].set(f"{lo} - {hi}" if hi >= lo else "-")
                 else:
                     w["seen"].set("kanał wyłączony")
+                raw = None
                 if live:
                     src = cfg.source
                     raw = state_obj.raw_axes[src] if 0 <= src < len(state_obj.raw_axes) else None
                     w["bar"].set(state_obj.pedals[key], raw)
+                dz_lo, dz_hi = cfg.deadzone_low, cfg.deadzone_high
+                w["plot"].set_curve(
+                    (dz_lo, dz_hi, cfg.gamma),
+                    lambda x, c=cfg: pedal_curve(x, c),
+                    shade=((0.0, dz_lo), (1.0 - dz_hi, 1.0)))
+                if raw is None:
+                    w["plot"].set_marker(None)
+                else:
+                    pos = pedal_position(raw, cfg)
+                    w["plot"].set_marker(pos, pedal_curve(pos, cfg))
+
+        # --- kierownica: wykres liniowosci ---
+        if tab == self.TAB_STEER:
+            lin = self.cfg.steer.linearity
+            half = max(1.0, self.cfg.steer.range_deg / 2.0)
+            self.steer_plot.set_curve(lin, lambda x, k=lin: steer_curve(x, k))
+            self.steer_plot.set_captions(f"-{half:.0f}°",
+                                         "kąt kierownicy → oś w grze",
+                                         f"+{half:.0f}°")
+            if live:
+                x = state_obj.steer_deg / half
+                self.steer_plot.set_marker(x, steer_curve(x, lin))
+            else:
+                self.steer_plot.set_marker(None)
 
         # --- zakladka G29 ---
         self.g29tab.tick(state_obj, connected, tab == self.TAB_G29)
@@ -2182,7 +2291,9 @@ class PanelApp:
         if live:
             self._pad_capture(state_obj.buttons_effective)
         if tab == self.TAB_PAD:
-            self._refresh_pad_tab(state_obj, pad_ok)
+            # bez lacza nie pokazujemy ostatniej ramki - pad wyglada wtedy,
+            # jakby przycisk dalej byl wcisniety
+            self._refresh_pad_tab(state_obj if live else None, pad_ok)
 
         # --- pasek stanu ---
         flags = []
@@ -2256,10 +2367,12 @@ class PanelApp:
     def _refresh_pad_tab(self, state_obj, pad_ok: bool) -> None:
         self.pad_view.set_assignments(self.cfg.pad.buttons)
         self._sync_pad_axis_labels()
-        pad_state = self.engine.last_pad
-        if pad_state is None and state_obj is not None:
-            from ..processing import build_pad_state
-            pad_state = build_pad_state(state_obj, self.cfg)
+        pad_state = None
+        if state_obj is not None:
+            pad_state = self.engine.last_pad
+            if pad_state is None:
+                from ..processing import build_pad_state
+                pad_state = build_pad_state(state_obj, self.cfg)
         if pad_state is not None:
             self.pad_view.set_active(
                 {name: bool(pad_state.buttons & XUSB[name])
@@ -2274,10 +2387,16 @@ class PanelApp:
                 names = [PAD_BUTTON_LABELS.get(n, n) for n in PAD_CONTROLS
                          if pad_state.buttons & XUSB[n]]
                 configure_if_changed(
-                    self.lbl_pad_live,
+                    self.lbl_pad_live, style="Good.TLabel",
                     text="Aktywne na padzie: " + (", ".join(names) if names else "nic"))
         else:
             self.pad_view.set_active({n: False for n in PAD_CONTROLS})
+            self.pad_view.set_triggers(0, 0)
+            self.pad_view.set_sticks(0.0, 0.0, 0.0, 0.0)
+            if (self.pad_view.learning is None
+                    and time.monotonic() >= self._pad_notice_until):
+                configure_if_changed(self.lbl_pad_live, text=OFFLINE_LIVE,
+                                     style="Muted.TLabel")
         warnings = self._pad_axis_warnings()
         if warnings:
             configure_if_changed(self.lbl_pad_conflict,
@@ -2292,7 +2411,7 @@ class PanelApp:
                     else (self.engine.pad_error.splitlines()[0]
                           if self.engine.pad_error else "Pad nie wystartował"))
         else:
-            text = ("Tryb pada wyłączony - powyżej wybierz 'Pad' albo "
+            text = ("Tryb pada wyłączony - obok wybierz 'Pad' albo "
                     "'Oba naraz', żeby gry zobaczyły kontroler.")
         configure_if_changed(self.lbl_pad_state, text=text)
 

@@ -166,7 +166,7 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
         pass
 
     # ---- pola ----
-    style.configure("TCombobox", fieldbackground=PANEL_HI, background=PANEL_HI,
+    style.configure("TCombobox", fieldbackground=PANEL_HI, background=PANEL,
                     foreground=TEXT, arrowcolor=TEXT_DIM, bordercolor=BORDER,
                     selectbackground=PANEL_HI, selectforeground=TEXT,
                     lightcolor=BORDER, darkcolor=BORDER,
@@ -182,7 +182,8 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
     root.option_add("*TCombobox*Listbox.selectForeground", ACCENT_INK)
     root.option_add("*TCombobox*Listbox.borderWidth", 0)
 
-    style.configure("TEntry", fieldbackground=PANEL_HI, foreground=TEXT,
+    style.configure("TEntry", fieldbackground=PANEL_HI, background=PANEL,
+                    foreground=TEXT,
                     bordercolor=BORDER, insertcolor=TEXT,
                     lightcolor=BORDER, darkcolor=BORDER, padding=(8, 5))
     style.map("TEntry", bordercolor=[("focus", ACCENT)])
@@ -239,6 +240,7 @@ def apply_theme(root: tk.Misc, fonts: Fonts) -> ttk.Style:
     style.configure("TSpinbox", fieldbackground=PANEL_HI, foreground=TEXT,
                     bordercolor=BORDER, arrowcolor=TEXT_DIM, padding=(6, 3))
 
+    _rounded_fields(root, style)
     return style
 
 
@@ -291,6 +293,103 @@ def _rounded_buttons(root: tk.Misc, style: ttk.Style) -> None:
          ("#4a2a31", "#5a3039"), ("#52262d", "#5a3039"), (PANEL, BORDER))
     make("Ghost.TButton", "RndGhost.border", (PANEL, BORDER),
          (PANEL_HI, BORDER_HI), (PANEL_HI, BORDER_HI), (PANEL, BORDER))
+
+
+def _rounded_fields(root: tk.Misc, style: ttk.Style) -> None:
+    """Pola wyboru, listy rozwijane i pola tekstowe w tym samym stylu co
+    zaokraglone przyciski.
+
+    "clam" rysuje pole wyboru jako kwadrat z krzyzykiem, a liste rozwijana
+    jako prostokat z osobnym pudelkiem na strzalke - obok zaokraglonych
+    przyciskow wygladaly jak z innego programu. Tlo stylu jest kolorem
+    karty: przezroczyste rogi obrazka pokazuja wtedy karte, a nie
+    kwadratowe tlo pola.
+    """
+    from . import art
+
+    keep = root._theme_images
+
+    def keep_photo(paint):
+        photo = art.photo(paint.image(), root)
+        keep.append(photo)
+        return photo
+
+    # ---- pole wyboru: zaokraglony kwadrat, zaznaczone - akcent z ptaszkiem
+    box, gap = 16, 8
+
+    def check(fill: str, edge: str, mark: str = ""):
+        p = art.Paint(box + gap, box)
+        p.fill(("rrect", 0, 0, box, box, 4.5), edge)
+        p.fill(("rrect", 1, 1, box - 1, box - 1, 3.5), fill)
+        if mark:
+            p.line(((4.2, 8.3), (6.9, 11.0), (11.9, 5.3)), mark, 2.0)
+        return keep_photo(p)
+
+    try:
+        style.element_create(
+            "Rnd.Checkbutton.indicator", "image", check(PANEL_HI, BORDER),
+            ("disabled", "selected", check(ACCENT_DIM, ACCENT_DIM, "#4d6678")),
+            ("disabled", check(PANEL, BORDER)),
+            ("pressed", "selected", check("#2f9fd8", "#2f9fd8", ACCENT_INK)),
+            ("active", "selected", check("#6ccfff", "#6ccfff", ACCENT_INK)),
+            ("selected", check(ACCENT, ACCENT, ACCENT_INK)),
+            ("pressed", check(ACCENT_DEEP, ACCENT_DIM)),
+            ("active", check(ELEV, BORDER_HI)),
+            sticky="")
+        style.layout("TCheckbutton", [("Checkbutton.padding", {
+            "sticky": "nswe", "children": [
+                ("Rnd.Checkbutton.indicator", {"side": "left", "sticky": ""}),
+                ("Checkbutton.label", {"side": "left", "sticky": "nswe"})]})])
+    except tk.TclError:
+        pass                            # element juz jest (drugie wywolanie)
+
+    # ---- tlo pola: 9-slice jak w przyciskach ----
+    def field(fill: str, edge: str):
+        size, r = 24, 6
+        p = art.Paint(size, size)
+        p.fill(("rrect", 0, 0, size, size, r), edge)
+        p.fill(("rrect", 1, 1, size - 1, size - 1, r - 1), fill)
+        return keep_photo(p)
+
+    # strzalka listy: sam szewron, bez osobnego pudelka
+    def chevron(color: str):
+        w, h = 22, 12
+        p = art.Paint(w, h)
+        p.line(((7, 4.2), (11, 8.2), (15, 4.2)), color, 1.8)
+        return keep_photo(p)
+
+    try:
+        style.element_create(
+            "Rnd.Combobox.field", "image", field(PANEL_HI, BORDER),
+            ("disabled", field(PANEL, BORDER)),
+            ("focus", field(PANEL_HI, ACCENT)),
+            ("pressed", field(ELEV, BORDER_HI)),
+            ("active", field(ELEV, BORDER_HI)),
+            ("hover", field(ELEV, BORDER_HI)),
+            border=7, padding=0, sticky="nswe")
+        style.element_create(
+            "Rnd.Combobox.arrow", "image", chevron(TEXT_DIM),
+            ("disabled", chevron(MUTED)), ("active", chevron(TEXT)),
+            ("hover", chevron(TEXT)), sticky="")
+        style.layout("TCombobox", [("Rnd.Combobox.field", {
+            "sticky": "nswe", "children": [
+                ("Rnd.Combobox.arrow", {"side": "right", "sticky": "ns"}),
+                ("Combobox.padding", {"expand": "1", "sticky": "nswe",
+                                      "children": [
+                    ("Combobox.textarea", {"sticky": "nswe"})]})]})])
+
+        style.element_create(
+            "Rnd.Entry.field", "image", field(PANEL_HI, BORDER),
+            ("disabled", field(PANEL, BORDER)),
+            ("focus", field(PANEL_HI, ACCENT)),
+            ("hover", field(PANEL_HI, BORDER_HI)),
+            border=7, padding=0, sticky="nswe")
+        style.layout("TEntry", [("Rnd.Entry.field", {
+            "sticky": "nswe", "children": [
+                ("Entry.padding", {"sticky": "nswe", "children": [
+                    ("Entry.textarea", {"sticky": "nswe"})]})]})])
+    except tk.TclError:
+        pass
 
 
 def mix(color_a: str, color_b: str, t: float) -> str:

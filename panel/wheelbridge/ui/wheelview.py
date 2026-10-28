@@ -114,6 +114,7 @@ class WheelCanvas(PadCanvas):
 
     _CONTROLS: Tuple[str, ...] = G29_CONTROLS
     _SIZE: Tuple[int, int] = (CANVAS_W, CANVAS_H)
+    _AXIS_PARTS: Tuple[str, ...] = ()       # kierownica nie ma osi do klikania
 
     # ------------------------------------------------------------ budowanie
 
@@ -435,6 +436,7 @@ class WheelView(PadView):
                   "wciśnij przycisk na swojej kierownicy. Prawy przycisk myszy "
                   "czyści gniazdo.")
     _NAME_MINSIZE = 112
+    _ROW_COLORS: Dict[str, str] = {}        # kolory liter ABXY tylko w padzie
 
     def set_angle(self, deg: float) -> None:
         self.canvas.set_angle(deg)

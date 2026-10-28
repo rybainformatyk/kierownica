@@ -25,7 +25,8 @@ from ..config import (DEFAULT_PAD_BUTTONS, G29_CONTROL_LABELS, G29_CONTROLS,
 from ..processing import build_g29_report, g29_active
 from . import theme
 from .wheelview import WIZARD_ORDER, WheelView
-from .widgets import Card, round_corners
+from .widgets import (OFFLINE_LIVE, Card, configure_if_changed, fit_wrap,
+                      round_corners)
 
 if TYPE_CHECKING:                       # tylko dla podpowiedzi typow
     from .app import PanelApp
@@ -123,21 +124,21 @@ class G29Tab:
         self.view.pack(fill="x")
         self.view.set_assignments(self.cfg.g29.buttons)
 
-        ttk.Label(view.body, style="Muted.TLabel", wraplength=1080,
-                  justify="left",
-                  text="Te przypisania działają tylko w trybie Kierownica G29 i "
-                       "nie zależą od zakładki Pad ani od listy vJoy w zakładce "
-                       "Przyciski. Krzyżak bez przypisań bierze kierunki z "
-                       "krzyżaka ustawionego w zakładce Przyciski. Biegi to "
-                       "przyciski skrzyni G29 - przypisz je, jeśli masz "
-                       "własną skrzynię albo manetki."
-                  ).pack(anchor="w", pady=(12, 0))
+        fit_wrap(ttk.Label(
+            view.body, style="Muted.TLabel", wraplength=1080, justify="left",
+            text="Te przypisania działają tylko w trybie Kierownica G29 i "
+                 "nie zależą od zakładki Pad ani od listy vJoy w zakładce "
+                 "Przyciski. Krzyżak bez przypisań bierze kierunki z "
+                 "krzyżaka ustawionego w zakładce Przyciski. Biegi to "
+                 "przyciski skrzyni G29 - przypisz je, jeśli masz "
+                 "własną skrzynię albo manetki."
+        ), cap=1080).pack(anchor="w", pady=(12, 0))
 
     # ---------------------------------------------------------- stan
 
     def _notify(self, text: str, seconds: float = 4.0) -> None:
         self._notice_until = time.monotonic() + seconds
-        self.lbl_live.configure(text=text)
+        self.lbl_live.configure(text=text, style="Good.TLabel")
 
     def _sync(self) -> None:
         if self.view is not None:
@@ -190,16 +191,18 @@ class G29Tab:
         if time.monotonic() < self._notice_until:
             return                      # swiezy komunikat ma pierwszenstwo
         learning = self.view.learning
+        style = "Good.TLabel"
         if learning is not None and not self._wizard:
             text = f"Czekam na przycisk kierownicy dla: {self._label(learning)}"
-        elif learning is not None or active is None:
+        elif learning is not None:
             # w kreatorze krok widac w podpowiedzi nad rysunkiem
             text = ""
+        elif active is None:
+            text, style = OFFLINE_LIVE, "Muted.TLabel"
         else:
             names = [self._label(n) for n in G29_CONTROLS if active.get(n)]
             text = "Wciśnięte na G29: " + (", ".join(names) if names else "nic")
-        if self.lbl_live.cget("text") != text:
-            self.lbl_live.configure(text=text)
+        configure_if_changed(self.lbl_live, text=text, style=style)
 
     # ---------------------------------------------------------- nauka
 

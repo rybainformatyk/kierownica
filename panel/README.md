@@ -84,20 +84,28 @@ Bez sterowników aplikacja nadal działa w trybie podglądu.
 
 ## Zakładki
 
-* **Pulpit** — kąt obrotu, pedały, przyciski, co idzie na wyjście, moment FFB.
+* **Pulpit** — kąt obrotu, pionowe wskaźniki pedałów i osi AUX (wyłączony
+  kanał pokazuje „wył.”), przyciski, co idzie na wyjście, moment FFB.
 * **Kierownica** — zakres lock-to-lock, impulsy enkodera (z autowykrywaniem),
-  krzywa, miękki ogranicznik końca zakresu.
-* **Pedały** — kreator kalibracji, martwe strefy, krzywe, filtrowanie.
+  krzywa, miękki ogranicznik końca zakresu. Wykres krzywej skrętu pokazuje
+  kąt kierownicy → oś w grze, a kropka — gdzie jest teraz kierownica.
+* **Pedały** — kreator kalibracji, martwe strefy, krzywe, filtrowanie. Każdy
+  pedał ma wykres krzywej: zacienione pasy to martwe strefy, kropka to
+  bieżące wciśnięcie. Wykres liczy ta sama funkcja co silnik, więc pokazuje
+  dokładnie to, co dostaje gra (bez wygładzania).
 * **Przyciski** — mapowanie na przyciski vJoy, krzyżak, kolumna **NC** dla
   styków normalnie zwartych.
 * **Pad** — rysowany kontroler i obok niego lista przypisań, po jednym
   wierszu na gniazdo. **Każdy kierunek drążka jest osobnym gniazdem**
   (w lewo, w prawo, w górę, w dół), tak jak w x360ce — dzięki temu w jeden
   drążek można wpiąć dwa różne źródła: skręt w poziomie, a gaz i hamulec
-  w pionie. Wiersze kierunków i spustów otwierają listę źródeł (kierownica
-  w lewo / w prawo, gaz, hamulec, sprzęgło, AUX), wiersze przycisków uczą
-  się z kierownicy: kliknij, wciśnij przycisk. Prawy przycisk myszy czyści.
-  Najechanie na wiersz podświetla odpowiednią część rysunku i odwrotnie.
+  w pionie. Mapować można z listy albo prosto z rysunku: przycisk na
+  rysunku uczy się z kierownicy (kliknij, wciśnij przycisk), spust otwiera
+  listę źródeł (kierownica w lewo / w prawo, gaz, hamulec, sprzęgło, AUX),
+  a drążek najpierw pyta o kierunek. Prawy przycisk myszy czyści
+  (na drążku - wszystkie cztery kierunki). Najechanie na wiersz podświetla
+  odpowiednią część rysunku i odwrotnie. W wąskim oknie lista przechodzi
+  pod rysunek.
   **Przypisz po kolei** prowadzi przez wszystkie 15 kontrolek krok po
   kroku — cel miga na rysunku, podpowiedź pokazuje, co gniazdo ma teraz
   i które przyciski trzymasz, a *Wstecz*, *Pomiń* i *Wyczyść i pomiń*
@@ -105,7 +113,17 @@ Bez sterowników aplikacja nadal działa w trybie podglądu.
 * **Force Feedback** — wzmocnienia, efekty lokalne, ustawienia mostka H.
 * **Diagnostyka** — jakość łącza, stan vJoy/ViGEm, dziennik.
 
-Ustawienia lądują w `config.json` obok aplikacji.
+Ustawienia lądują w `config.json` obok aplikacji — przy **Zapisz
+ustawienia** (obok przycisku pojawia się potwierdzenie) i przy zamknięciu
+okna.
+
+### Skróty klawiszowe
+
+| Skrót | Działanie |
+|---|---|
+| Ctrl+S | zapisz ustawienia |
+| Ctrl+1 … Ctrl+8 | przejdź do zakładki (Pulpit … Diagnostyka) |
+| Esc | przerwij przypisywanie przycisków |
 
 ## Firmware
 

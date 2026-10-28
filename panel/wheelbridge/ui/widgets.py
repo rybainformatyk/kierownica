@@ -12,6 +12,10 @@ from PIL import Image, ImageChops, ImageDraw
 from . import art, theme
 from .theme import Fonts
 
+#: Linia podgladu na zywo, zanim plytka cos przysle - pusta zostawiala
+#: w karcie dziure.
+OFFLINE_LIVE = "Podgląd na żywo ruszy po połączeniu z płytką."
+
 
 # --------------------------------------------------------------- pomocnicze
 
@@ -53,6 +57,47 @@ def configure_if_changed(widget: tk.Misc, **options) -> None:
                if str(widget.cget(k)) != str(v)}
     if changed:
         widget.configure(**changed)
+
+
+def cached_photo(widget: tk.Misc, key: tuple,
+                 render: Callable[[], Image.Image]) -> object:
+    """Obrazek z pamieci okna - render() wolany tylko przy pierwszym uzyciu.
+
+    Wygladzone ksztalty z Pillow zamiast wielokatow Tk: Tk na Windowsie nie
+    wygladza krawedzi, a jego "smooth" zostawial w rogach pojedyncze piksele.
+    """
+    root = widget.winfo_toplevel()
+    cache = getattr(root, "_photo_cache", None)
+    if cache is None:
+        cache = root._photo_cache = {}
+    photo = cache.get(key)
+    if photo is None:
+        photo = cache[key] = art.photo(render(), root)
+    return photo
+
+
+def rrect_image(w: int, h: int, r: float, fill: str,
+                bg: str = theme.PANEL) -> Image.Image:
+    """Wygladzony zaokraglony prostokat na jednolitym tle."""
+    p = art.Paint(w, h)
+    p.fill(("rrect", 0, 0, w, h, r), fill)
+    return art.opaque(p.image(), bg).convert("RGB")
+
+
+def fit_wrap(label: tk.Misc, cap: int = 900, margin: int = 0) -> tk.Misc:
+    """Lamie napis do szerokosci rodzica, ale nie szerzej niz cap.
+
+    Stale wraplength bylo dobrane do jednego rozmiaru okna: w szerokiej
+    karcie tekst konczyl sie w polowie, w waskiej - wychodzil za krawedz.
+    cap trzyma czytelna dlugosc wiersza na duzym ekranie. Zwraca etykiete,
+    zeby dalo sie od razu wywolac pack/grid.
+    """
+    def on_resize(event) -> None:
+        width = max(120, min(cap, event.width - margin))
+        configure_if_changed(label, wraplength=width)
+
+    label.master.bind("<Configure>", on_resize, add="+")
+    return label
 
 
 # ----------------------------------------------------------- narozniki
@@ -102,7 +147,7 @@ class Card(ttk.Frame):
     """Panel z naglowkiem, cienka ramka i linia pod tytulem."""
 
     def __init__(self, master: tk.Misc, title: str, fonts: Fonts,
-                 subtitle: str = "", wrap: int = 360,
+                 subtitle: str = "", wrap: int = 900,
                  accent: str = theme.ACCENT, **kw) -> None:
         self.outer = tk.Frame(master, bg=theme.BORDER, bd=0, highlightthickness=0)
         super().__init__(self.outer, style="Card.TFrame",
@@ -134,9 +179,9 @@ class Card(ttk.Frame):
         self.body.pack(fill="both", expand=True, pady=(11, 0))
 
         if subtitle:
-            ttk.Label(self.body, text=subtitle, style="Muted.TLabel",
-                      wraplength=wrap, justify="left").pack(anchor="w",
-                                                            pady=(0, 8))
+            fit_wrap(ttk.Label(self.body, text=subtitle, style="Muted.TLabel",
+                               wraplength=wrap, justify="left"),
+                     cap=wrap).pack(anchor="w", pady=(0, 8))
 
     # Ukladamy zewnetrzna ramke, nie samego siebie.
     def place_card(self, **kw) -> "Card":
@@ -610,11 +655,13 @@ class ButtonGrid(tk.Frame):
     COLS = 8
     CELL_H = 21
     GAP = 4
+    RADIUS = 5
 
     def __init__(self, master: tk.Misc, fonts: Fonts, count: int = 32) -> None:
         super().__init__(master, bg=theme.PANEL)
         self._count = count
         self._state = [False] * count
+        self._fill: List[str] = [theme.TRACK] * count
         self._rows = (count + self.COLS - 1) // self.COLS
         height = self._rows * self.CELL_H + (self._rows - 1) * self.GAP
         self._canvas = tk.Canvas(self, bg=theme.PANEL, highlightthickness=0,
@@ -622,9 +669,12 @@ class ButtonGrid(tk.Frame):
         self._canvas.pack(fill="x", expand=True)
         self._cells: List[int] = []
         self._texts: List[int] = []
+        self._widths: List[int] = [1] * count
+        # obrazki kafelkow w biezacym rozmiarze; nowy uklad zaczyna od zera,
+        # wiec przeciaganie okna nie zbiera obrazkow wszystkich szerokosci
+        self._photos: dict = {}
         for i in range(count):
-            self._cells.append(round_rect(self._canvas, 0, 0, 1, 1, 5,
-                                          fill=theme.TRACK, outline=""))
+            self._cells.append(self._canvas.create_image(0, 0, anchor="nw"))
             self._texts.append(self._canvas.create_text(
                 0, 0, text=str(i), font=fonts.mono_small, fill=theme.MUTED))
         self._cw = self.COLS * 44
@@ -637,25 +687,37 @@ class ButtonGrid(tk.Frame):
         self._cw = max(self.COLS * 20, event.width)
         self._layout()
 
+    def _paint(self, i: int) -> None:
+        key = (self._widths[i], self._fill[i])
+        photo = self._photos.get(key)
+        if photo is None:
+            photo = self._photos[key] = art.photo(
+                rrect_image(key[0], self.CELL_H, self.RADIUS, key[1]), self)
+        self._canvas.itemconfigure(self._cells[i], image=photo)
+
     def _layout(self) -> None:
-        total = self._cw
-        step = (total - self.GAP * (self.COLS - 1)) / self.COLS
+        # Cale piksele: kafelek to obrazek, a jego krawedzie maja lezec
+        # rowno na siatce ekranu.
+        step = (self._cw - self.GAP * (self.COLS - 1)) / self.COLS
+        self._photos = {}
         for i in range(self._count):
             col, row = i % self.COLS, i // self.COLS
-            x1 = col * (step + self.GAP)
+            x1 = int(round(col * (step + self.GAP)))
+            x2 = int(round(col * (step + self.GAP) + step))
             y1 = row * (self.CELL_H + self.GAP)
-            set_round_rect(self._canvas, self._cells[i], x1, y1,
-                           x1 + step, y1 + self.CELL_H, 5)
-            self._canvas.coords(self._texts[i], x1 + step / 2,
+            self._widths[i] = max(4, x2 - x1)
+            self._canvas.coords(self._cells[i], x1, y1)
+            self._canvas.coords(self._texts[i], (x1 + x2) / 2,
                                 y1 + self.CELL_H / 2)
+            self._paint(i)
 
     def set_mask(self, mask: int) -> None:
         for i in range(self._count):
             on = bool((mask >> i) & 1)
             if on != self._state[i]:
                 self._state[i] = on
-                self._canvas.itemconfigure(
-                    self._cells[i], fill=theme.ACCENT if on else theme.TRACK)
+                self._fill[i] = theme.ACCENT if on else theme.TRACK
+                self._paint(i)
                 self._canvas.itemconfigure(
                     self._texts[i],
                     fill=theme.ACCENT_INK if on else theme.MUTED)
@@ -663,40 +725,60 @@ class ButtonGrid(tk.Frame):
     def set_highlight(self, indices: Iterable[int], color: str) -> None:
         for i in indices:
             if 0 <= i < self._count and not self._state[i]:
-                self._canvas.itemconfigure(self._cells[i], fill=color)
+                self._fill[i] = color
+                self._paint(i)
                 self._canvas.itemconfigure(self._texts[i], fill=theme.TEXT)
 
 
 class HatIndicator(tk.Canvas):
-    """Krzyzak - cztery trojkaty."""
+    """Krzyzak - cztery strzalki na okraglej podstawie.
+
+    Piec gotowych obrazkow (srodek i cztery kierunki); zmiana kierunku to
+    tylko podmiana obrazka.
+    """
 
     def __init__(self, master: tk.Misc, size: int = 74) -> None:
         super().__init__(master, width=size, height=size, bg=theme.PANEL,
                          highlightthickness=0, bd=0)
-        s = size
-        c = s / 2
-        g = s * 0.12
-        o = s * 0.46
-        self.create_oval(2, 2, s - 2, s - 2,
-                         fill=theme.darken(theme.TRACK, 0.35), outline="")
-        self._items = [
-            self.create_polygon(c, c - o, c - g, c - g, c + g, c - g),       # gora
-            self.create_polygon(c + o, c, c + g, c - g, c + g, c + g),       # prawo
-            self.create_polygon(c, c + o, c - g, c + g, c + g, c + g),       # dol
-            self.create_polygon(c - o, c, c - g, c - g, c - g, c + g),       # lewo
-        ]
-        for it in self._items:
-            self.itemconfigure(it, fill=theme.TRACK, outline="")
-        self.create_oval(c - g * 0.7, c - g * 0.7, c + g * 0.7, c + g * 0.7,
-                         fill=theme.PANEL_HI, outline=theme.BORDER)
+        self._size = size
+        self._item = self.create_image(0, 0, anchor="nw",
+                                       image=self._photo(-1))
         self._active = -1
+
+    def _photo(self, direction: int) -> object:
+        s = self._size
+
+        def render() -> Image.Image:
+            c = s / 2
+            g = s * 0.12            # promien srodka
+            b = s * 0.17            # podstawa strzalki od srodka
+            w = s * 0.13            # polowa szerokosci podstawy - mniej niz b,
+                                    # wiec sasiednie strzalki sie nie stykaja
+            o = s * 0.42            # czubek strzalki od srodka
+            p = art.Paint(s, s)
+            p.fill(("circle", c, c, c - 2), theme.darken(theme.TRACK, 0.35))
+            arrows = (((c, c - o), (c - w, c - b), (c + w, c - b)),
+                      ((c + o, c), (c + b, c - w), (c + b, c + w)),
+                      ((c, c + o), (c - w, c + b), (c + w, c + b)),
+                      ((c - o, c), (c - b, c - w), (c - b, c + w)))
+            for i, pts in enumerate(arrows):
+                on = i == direction
+                if on:
+                    p.glow(("poly", pts), theme.ACCENT, radius=4, alpha=120)
+                p.fill(("poly", pts), theme.ACCENT if on else theme.TRACK)
+            p.fill(("circle", c, c, g * 0.75), theme.BORDER)
+            p.fill(("circle", c, c, g * 0.75 - 1), theme.PANEL_HI)
+            return art.opaque(p.image(), theme.PANEL).convert("RGB")
+
+        return cached_photo(self, ("hat", s, direction), render)
 
     def set(self, direction: int) -> None:
         if direction == self._active:
             return
         self._active = direction
-        for i, it in enumerate(self._items):
-            self.itemconfigure(it, fill=theme.ACCENT if i == direction else theme.TRACK)
+        self.itemconfigure(self._item,
+                           image=self._photo(direction if 0 <= direction < 4
+                                             else -1))
 
 
 class Sparkline(tk.Canvas):
@@ -869,12 +951,8 @@ class LabeledSlider(tk.Frame):
                                  fill=theme.TRACK, outline="")
         self._fill = round_rect(self._canvas, 0, cy - r, 0, cy + r, r,
                                 fill=theme.ACCENT, outline="")
-        k = self.KNOB_R
-        self._knob_glow = self._canvas.create_oval(0, 0, 0, 0, fill="",
-                                                   outline="")
-        self._knob = self._canvas.create_oval(-k, cy - k, k, cy + k,
-                                              fill=theme.TEXT,
-                                              outline=theme.ACCENT, width=2)
+        self._knob = self._canvas.create_image(0, cy,
+                                               image=self._knob_photo(False))
         for seq, handler in (("<Button-1>", self._on_press),
                              ("<B1-Motion>", self._on_drag),
                              ("<ButtonRelease-1>", self._on_release),
@@ -883,10 +961,12 @@ class LabeledSlider(tk.Frame):
                              ("<Leave>", self._on_leave)):
             self._canvas.bind(seq, handler)
 
+        self._hint = None
         if hint:
-            tk.Label(self, text=hint, bg=theme.PANEL, fg=theme.MUTED,
-                     font=fonts.tiny, wraplength=width, justify="left",
-                     anchor="w").pack(fill="x", pady=(3, 0))
+            self._hint = tk.Label(self, text=hint, bg=theme.PANEL,
+                                  fg=theme.MUTED, font=fonts.tiny,
+                                  wraplength=width, justify="left", anchor="w")
+            self._hint.pack(fill="x", pady=(3, 0))
         self._redraw()
 
     # --------------------------------------------------------- przeliczenia
@@ -928,23 +1008,38 @@ class LabeledSlider(tk.Frame):
         else:
             self._canvas.itemconfigure(self._fill, state="normal")
             set_round_rect(self._canvas, self._fill, 0, cy - r, x, cy + r, r)
-        k = self.KNOB_R
-        self._canvas.coords(self._knob, x - k, cy - k, x + k, cy + k)
-        self._canvas.coords(self._knob_glow, x - k - 4, cy - k - 4,
-                            x + k + 4, cy + k + 4)
+        self._canvas.coords(self._knob, x, cy)
 
     def _on_resize(self, event) -> None:
         self._cw = max(40, event.width)
         self._redraw()
+        if self._hint is not None:
+            # podpowiedz konczy sie tam, gdzie rowek suwaka
+            configure_if_changed(self._hint, wraplength=self._cw)
+
+    def _knob_photo(self, glow: bool) -> object:
+        """Galka: jasne kolko w obwodce akcentu, pod kursorem z poswiata."""
+        k = self.KNOB_R
+
+        def render() -> Image.Image:
+            size = 2 * (k + 5)
+            c = size / 2
+            p = art.Paint(size, size)
+            if glow:
+                p.fill(("circle", c, c, k + 4), theme.ACCENT, alpha=64)
+            p.fill(("circle", c, c, k), theme.ACCENT)
+            p.fill(("circle", c, c, k - 2), theme.TEXT)
+            return p.image()
+
+        return cached_photo(self, ("knob", k, glow), render)
 
     def _on_enter(self, _event) -> None:
-        self._canvas.itemconfigure(self._knob_glow,
-                                   fill=theme.mix(theme.PANEL, theme.ACCENT,
-                                                  0.25))
+        self._canvas.itemconfigure(self._knob, image=self._knob_photo(True))
 
     def _on_leave(self, _event) -> None:
         if not self._dragging:
-            self._canvas.itemconfigure(self._knob_glow, fill="")
+            self._canvas.itemconfigure(self._knob,
+                                       image=self._knob_photo(False))
 
     # ------------------------------------------------------------ zdarzenia
 
@@ -968,7 +1063,7 @@ class LabeledSlider(tk.Frame):
 
     def _on_release(self, _event) -> None:
         self._dragging = False
-        self._canvas.itemconfigure(self._knob_glow, fill="")
+        self._canvas.itemconfigure(self._knob, image=self._knob_photo(False))
 
     # ----------------------------------------------------------------- API
 
@@ -983,6 +1078,428 @@ class LabeledSlider(tk.Frame):
             self._redraw()
         finally:
             self._updating = False
+
+
+class CurvePlot(tk.Canvas):
+    """Wykres krzywej odpowiedzi (wejscie -> wyjscie) z kropka pozycji.
+
+    Wykres jest obrazkiem z Pillow (wygladzona linia, wypelnienie pod
+    krzywa, zacienione martwe strefy) i powstaje od nowa tylko wtedy, gdy
+    zmienia sie krzywa albo szerokosc. Kropka biezacej pozycji to osobny
+    maly obrazek przesuwany po plotnie - ruch pedalu nic nie przerysowuje.
+
+    Wspolrzedne funkcji: x i y w zakresie 0..1, a w trybie bipolar -1..1.
+    """
+
+    PAD = 1                     # obwodka wokol pola wykresu
+    INSET = 5                   # krzywa nie dotyka krawedzi pola
+    CAPTION_H = 18              # pas na podpisy pod wykresem
+    SAMPLES = 120
+    SS = 2                      # powiekszenie przy rysowaniu - wystarcza,
+                                # a wykres przerysowuje sie przy suwaku
+
+    def __init__(self, master: tk.Misc, fonts: Fonts, height: int = 112,
+                 color: str = theme.ACCENT, bipolar: bool = False,
+                 captions: Sequence[str] = ("", "", "")) -> None:
+        super().__init__(master, height=height + self.CAPTION_H, width=200,
+                         bg=theme.PANEL, highlightthickness=0, bd=0)
+        self._ph = height
+        self._cw = 200
+        self._color = color
+        self._bipolar = bipolar
+        self._fn: Optional[Callable[[float], float]] = None
+        self._shade: Tuple[Tuple[float, float], ...] = ()
+        self._key: object = None
+        self._drawn: object = None
+        self._marker_xy: Optional[Tuple[float, float]] = None
+        self._marker_at: Optional[Tuple[int, int]] = None
+        self._resize_job: Optional[str] = None
+
+        self._photo = None
+        self._image = self.create_image(0, 0, anchor="nw")
+        self._marker = self.create_image(0, 0, state="hidden",
+                                         image=self._marker_photo())
+        y = height + self.CAPTION_H / 2 + 1
+        self._captions = [
+            self.create_text(1, y, anchor="w", font=fonts.tiny,
+                             fill=theme.MUTED),
+            self.create_text(100, y, anchor="center", font=fonts.tiny,
+                             fill=theme.MUTED),
+            self.create_text(199, y, anchor="e", font=fonts.tiny,
+                             fill=theme.MUTED)]
+        self.set_captions(*captions)
+        self.bind("<Configure>", self._on_resize)
+
+    # ------------------------------------------------------------- uklad
+
+    RESIZE_DELAY_MS = 80        # przerysowanie po ustaniu zmian rozmiaru
+
+    def _on_resize(self, event) -> None:
+        width = max(80, event.width)
+        if width == self._cw and self._drawn is not None:
+            return
+        self._cw = width
+        y = self._ph + self.CAPTION_H / 2 + 1
+        self.coords(self._captions[0], 1, y)
+        self.coords(self._captions[1], width / 2, y)
+        self.coords(self._captions[2], width - 1, y)
+        # kropka stoi we wspolrzednych funkcji - po zmianie szerokosci
+        # trzeba ja przeliczyc na nowe piksele
+        if self._marker_xy is not None:
+            self._marker_at = None
+            self.set_marker(*self._marker_xy)
+        # Wykres kosztuje ~12 ms, a przeciaganie krawedzi okna daje dziesiatki
+        # zdarzen na sekunde dla kazdego wykresu (takze na ukrytych
+        # zakladkach) - rysujemy raz, gdy rozmiar przestanie sie zmieniac.
+        if self._resize_job is not None:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(self.RESIZE_DELAY_MS, self._resized)
+
+    def _resized(self) -> None:
+        self._resize_job = None
+        self._render()
+
+    def _to_px(self, x: float, y: float) -> Tuple[float, float]:
+        """Wspolrzedne funkcji -> piksele wewnatrz pola wykresu."""
+        lo = -1.0 if self._bipolar else 0.0
+        w = self._cw - 2 * self.INSET
+        h = self._ph - 2 * self.INSET
+        tx = (x - lo) / (1.0 - lo)
+        ty = (y - lo) / (1.0 - lo)
+        return self.INSET + tx * w, self.INSET + (1.0 - ty) * h
+
+    # ----------------------------------------------------------- rysunek
+
+    def _marker_photo(self) -> object:
+        color = self._color
+
+        def render() -> Image.Image:
+            p = art.Paint(18, 18)
+            p.fill(("circle", 9, 9, 8), color, alpha=70)
+            p.fill(("circle", 9, 9, 4.5), color)
+            p.fill(("circle", 9, 9, 3.0), theme.TEXT)
+            return p.image()
+
+        return cached_photo(self, ("plot-marker", color), render)
+
+    def _render(self) -> None:
+        if self._fn is None:
+            return
+        w, h = self._cw, self._ph
+        lo = -1.0 if self._bipolar else 0.0
+        pad = self.PAD
+        p = art.Paint(w, h, ss=self.SS)
+        p.fill(("rrect", 0, 0, w, h, 7), theme.BORDER)
+        p.fill(("rrect", pad, pad, w - pad, h - pad, 6), theme.PANEL_HI)
+
+        # zacienione martwe strefy - pas na cala wysokosc pola
+        for a, b in self._shade:
+            if b - a < 0.002:
+                continue
+            x1 = max(pad + 1.0, self._to_px(a, 0)[0])
+            x2 = min(w - pad - 1.0, self._to_px(b, 0)[0])
+            if x2 - x1 >= 1.0:
+                p.fill(("rrect", x1, pad + 1, x2, h - pad - 1, 3),
+                       theme.mix(theme.PANEL_HI, theme.BAD, 0.12))
+
+        grid = theme.mix(theme.PANEL_HI, theme.BORDER_HI, 0.55)
+        for f in (0.25, 0.5, 0.75):
+            v = lo + (1.0 - lo) * f
+            x = self._to_px(v, 0)[0]
+            y = self._to_px(0, v)[1]
+            color = theme.BORDER_HI if self._bipolar and f == 0.5 else grid
+            p.line(((x, pad + 2), (x, h - pad - 2)), color, 1.0,
+                   round_caps=False)
+            p.line(((pad + 2, y), (w - pad - 2, y)), color, 1.0,
+                   round_caps=False)
+        # przekatna - tak wyglada odpowiedz liniowa
+        p.line((self._to_px(lo, lo), self._to_px(1.0, 1.0)),
+               theme.mix(theme.PANEL_HI, theme.TEXT_DIM, 0.30), 1.0)
+
+        pts = []
+        for i in range(self.SAMPLES + 1):
+            x = lo + (1.0 - lo) * i / self.SAMPLES
+            pts.append(self._to_px(x, self._fn(x)))
+        base_y = self._to_px(0, 0)[1]
+        p.fill(("poly", ((pts[0][0], base_y),) + tuple(pts)
+                + ((pts[-1][0], base_y),)), self._color, alpha=38)
+        p.line(pts, self._color, 2.2)
+
+        img = art.opaque(p.image(), theme.PANEL).convert("RGB")
+        if self._photo is not None and (self._photo.width(),
+                                        self._photo.height()) == img.size:
+            self._photo.paste(img)
+        else:
+            self._photo = art.photo(img, self)
+            self.itemconfigure(self._image, image=self._photo)
+        self._drawn = (self._key, w)
+        self.tag_raise(self._marker)
+
+    # ----------------------------------------------------------------- API
+
+    def set_curve(self, key: object, fn: Callable[[float], float],
+                  shade: Sequence[Tuple[float, float]] = ()) -> None:
+        """Nowa krzywa. key opisuje jej parametry - ten sam key nic nie
+        przerysowuje, wiec mozna wolac co klatke."""
+        self._fn = fn
+        self._shade = tuple(shade)
+        if key == self._key and self._drawn is not None:
+            return
+        self._key = key
+        self._render()
+
+    def set_marker(self, x: Optional[float], y: Optional[float] = None) -> None:
+        """Kropka w punkcie (x, y) albo ukryta, gdy x lub y jest None."""
+        if x is None or y is None:
+            self._marker_xy = None
+            if self._marker_at is not None:
+                self._marker_at = None
+                self.itemconfigure(self._marker, state="hidden")
+            return
+        lo = -1.0 if self._bipolar else 0.0
+        x = min(1.0, max(lo, x))
+        y = min(1.0, max(lo, y))
+        self._marker_xy = (x, y)
+        px, py = self._to_px(x, y)
+        at = (int(round(px)), int(round(py)))
+        if at == self._marker_at:
+            return
+        if self._marker_at is None:
+            self.itemconfigure(self._marker, state="normal")
+        self._marker_at = at
+        self.coords(self._marker, *at)
+
+    def set_captions(self, left: str, middle: str, right: str) -> None:
+        for item, text in zip(self._captions, (left, middle, right)):
+            if self.itemcget(item, "text") != text:
+                self.itemconfigure(item, text=text)
+
+
+class PedalGauge(tk.Frame):
+    """Pionowy wskaznik pedalu na pulpicie: nazwa, slupek, procent.
+
+    Slupek to zwykly prostokat Tk przykryty wygladzona "maska" z
+    zaokraglonymi rogami - wypelnienie zmienia sie co klatke tylko przez
+    coords, a krawedzie i tak sa gladkie.
+    """
+
+    BAR_W = 44
+    RADIUS = 9
+
+    def __init__(self, master: tk.Misc, fonts: Fonts, label: str,
+                 color: str = theme.ACCENT, height: int = 140) -> None:
+        super().__init__(master, bg=theme.PANEL)
+        self._bh = height
+        self._value = -1.0
+        self._enabled: Optional[bool] = None
+        self._raw_value: Optional[int] = None
+
+        self._name = tk.Label(self, text=label, bg=theme.PANEL,
+                              fg=theme.TEXT_DIM, font=fonts.small_bold)
+        self._name.pack()
+
+        w, h = self.BAR_W, height
+        self._canvas = tk.Canvas(self, width=w, height=h, bg=theme.PANEL,
+                                 highlightthickness=0, bd=0)
+        self._canvas.pack(pady=(6, 4))
+        self._canvas.create_rectangle(0, 0, w, h, fill=theme.TRACK, width=0)
+        tick = theme.mix(theme.TRACK, theme.BORDER_HI, 0.55)
+        for f in (0.25, 0.5, 0.75):
+            y = round(h * (1.0 - f))
+            self._canvas.create_line(8, y, w - 8, y, fill=tick)
+        self._fill = self._canvas.create_rectangle(0, h, w, h, fill=color,
+                                                   width=0, state="hidden")
+        self._canvas.create_image(0, 0, anchor="nw", image=self._mask_photo())
+
+        # Stala szerokosc - "5 %" i "100 %" maja rozna dlugosc, a zmiana
+        # rozmiaru napisu przeliczalaby uklad calej karty.
+        self._pct = tk.Label(self, text="0 %", bg=theme.PANEL, fg=theme.MUTED,
+                             font=fonts.heading, width=6)
+        self._pct.pack()
+        self._raw = tk.Label(self, text="", bg=theme.PANEL, fg=theme.MUTED,
+                             font=fonts.mono_small)
+        self._raw.pack()
+        self.set(0.0, None, True)
+
+    def _mask_photo(self) -> object:
+        """Tlo karty wszedzie poza zaokraglonym slupkiem."""
+        w, h, r = self.BAR_W, self._bh, self.RADIUS
+
+        def render() -> Image.Image:
+            p = art.Paint(w, h)
+            hole = p.mask(("rrect", 0, 0, w, h, r)).reduce(p.ss)
+            img = Image.new("RGBA", (w, h), art.rgba(theme.PANEL))
+            img.putalpha(ImageChops.invert(hole))
+            return img
+
+        return cached_photo(self, ("gauge-mask", w, h, r), render)
+
+    def set(self, value: float, raw: Optional[int] = None,
+            enabled: bool = True) -> None:
+        if value != value:
+            value = 0.0
+        value = max(0.0, min(1.0, value)) if enabled else 0.0
+        if enabled != self._enabled:
+            self._enabled = enabled
+            self._name.configure(fg=theme.TEXT_DIM if enabled else theme.MUTED)
+            self._value = -1.0                      # wymus odswiezenie
+        if abs(value - self._value) > 0.0005:
+            self._value = value
+            h = self._bh
+            top = int(round(h * (1.0 - value)))
+            if h - top < 1:
+                self._canvas.itemconfigure(self._fill, state="hidden")
+            else:
+                self._canvas.itemconfigure(self._fill, state="normal")
+                self._canvas.coords(self._fill, 0, top, self.BAR_W, h)
+            if enabled:
+                self._pct.configure(text=f"{value * 100:.0f} %",
+                                    fg=theme.TEXT if value > 0.002
+                                    else theme.MUTED)
+            else:
+                self._pct.configure(text="wył.", fg=theme.MUTED)
+        raw = raw if enabled else None
+        if raw != self._raw_value:
+            self._raw_value = raw
+            self._raw.configure(text="" if raw is None else str(raw))
+
+
+class PopupMenu:
+    """Ciemne menu podreczne w kolorach panelu.
+
+    tk.Menu na Windowsie jest systemowe: ignoruje kolory i wyskakiwalo jako
+    jasna lista w ciemnym oknie. Tu jest zwykle okno bez ramki z etykietami.
+    Lokalny grab kieruje do niego klikniecia z calej aplikacji - klik poza
+    menu je zamyka (i nic wiecej nie robi), Esc tez.
+    """
+
+    def __init__(self, master: tk.Misc, fonts: Fonts,
+                 title: str = "") -> None:
+        self._master = master
+        self._fonts = fonts
+        self._title = title
+        self._items: List[Tuple[str, object]] = []
+        self.window: Optional[tk.Toplevel] = None
+
+    def add(self, label: str, command: Optional[Callable[[], None]] = None,
+            checked: bool = False, enabled: bool = True,
+            note: str = "") -> None:
+        self._items.append(("item", (label, command, checked, enabled, note)))
+
+    def add_separator(self) -> None:
+        self._items.append(("sep", None))
+
+    # ------------------------------------------------------------- pokaz
+
+    def popup(self, x_root: int, y_root: int) -> None:
+        win = tk.Toplevel(self._master, bg=theme.BORDER_HI, bd=0,
+                          highlightthickness=0)
+        self.window = win
+        win.withdraw()
+        win.overrideredirect(True)
+        try:
+            win.transient(self._master.winfo_toplevel())
+        except tk.TclError:
+            pass
+        body = tk.Frame(win, bg=theme.PANEL_HI)
+        body.pack(fill="both", expand=True, padx=1, pady=1)
+        if self._title:
+            tk.Label(body, text=self._title, bg=theme.PANEL_HI,
+                     fg=theme.MUTED, font=self._fonts.tiny_bold, anchor="w",
+                     padx=12, pady=6).pack(fill="x")
+            tk.Frame(body, bg=theme.BORDER, height=1).pack(fill="x")
+        for kind, data in self._items:
+            if kind == "sep":
+                tk.Frame(body, bg=theme.BORDER, height=1).pack(fill="x",
+                                                               pady=3)
+                continue
+            self._build_item(body, *data)
+
+        win.update_idletasks()
+        w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+        # menu zostaje na ekranie, takze przy kliknieciu przy krawedzi
+        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+        x = max(0, min(x_root, sw - w - 4))
+        y = max(0, min(y_root, sh - h - 4))
+        win.geometry(f"+{x}+{y}")
+        win.deiconify()
+        win.lift()
+        win.bind("<ButtonPress>", self._on_press)
+        win.bind("<Escape>", lambda _e: self.close())
+        try:
+            win.focus_force()
+            win.grab_set()
+        except tk.TclError:
+            pass                        # inne okno trzyma grab - menu i tak dziala
+
+    def _build_item(self, parent: tk.Misc, label: str,
+                    command: Optional[Callable[[], None]], checked: bool,
+                    enabled: bool, note: str) -> None:
+        fg = theme.TEXT if enabled else theme.MUTED
+        row = tk.Frame(parent, bg=theme.PANEL_HI,
+                       cursor="hand2" if enabled else "")
+        row.pack(fill="x")
+        mark = tk.Label(row, text="✓" if checked else "", width=2,
+                        bg=theme.PANEL_HI, fg=theme.ACCENT,
+                        font=self._fonts.small_bold)
+        mark.pack(side="left", padx=(6, 0))
+        text = tk.Label(row, text=label, bg=theme.PANEL_HI, fg=fg,
+                        font=self._fonts.small_bold if checked
+                        else self._fonts.small, anchor="w", pady=5)
+        text.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        widgets = [row, mark, text]
+        if note:
+            extra = tk.Label(row, text=note, bg=theme.PANEL_HI,
+                             fg=theme.WARN if enabled else theme.MUTED,
+                             font=self._fonts.tiny)
+            extra.pack(side="right", padx=(8, 12))
+            widgets.append(extra)
+        else:
+            tk.Frame(row, bg=theme.PANEL_HI, width=12).pack(side="right")
+        if not enabled or command is None:
+            return
+
+        def paint(on: bool) -> None:
+            bg = theme.ACCENT_DEEP if on else theme.PANEL_HI
+            for w in widgets:
+                w.configure(bg=bg)
+
+        for w in widgets:
+            w.bind("<Enter>", lambda _e: paint(True))
+            w.bind("<Leave>", lambda _e: paint(False))
+            w.bind("<ButtonRelease-1>", lambda _e, c=command: self._choose(c))
+
+    # ---------------------------------------------------------- zamkniecie
+
+    def _inside(self, x_root: int, y_root: int) -> bool:
+        win = self.window
+        if win is None:
+            return False
+        x, y = win.winfo_rootx(), win.winfo_rooty()
+        return (x <= x_root < x + win.winfo_width()
+                and y <= y_root < y + win.winfo_height())
+
+    def _on_press(self, event) -> None:
+        if not self._inside(event.x_root, event.y_root):
+            self.close()
+
+    def _choose(self, command: Callable[[], None]) -> None:
+        self.close()
+        command()
+
+    def close(self) -> None:
+        win, self.window = self.window, None
+        if win is None:
+            return
+        try:
+            win.grab_release()
+            win.destroy()
+        except tk.TclError:
+            pass
+
+    @property
+    def is_open(self) -> bool:
+        return self.window is not None
 
 
 class StatRow(tk.Frame):

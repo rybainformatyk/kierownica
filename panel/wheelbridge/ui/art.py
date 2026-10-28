@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Callable, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
+from PIL import (Image, ImageChops, ImageDraw, ImageFilter, ImageFont,
+                 ImageTk)
 
 SS = 4                      # powiekszenie przy rysowaniu
 
@@ -268,8 +269,21 @@ class Paint:
         """Obrys PO WEWNETRZNEJ stronie ksztaltu (nie wychodzi poza niego)."""
         sub = self._sub(shape_bbox(shape))
         outer = sub.mask(shape)
-        inner = sub.mask(grow(shape, -width))
-        ring = Image.composite(Image.new("L", outer.size, 0), outer, inner)
+        if shape[0] == "poly":
+            # Wielokat bywa wklesly (bumper wzdluz krawedzi pada), a grow()
+            # zweza go wzgledem srodka ciezkosci - obrys mialby rozna
+            # grubosc. Linia o podwojnej grubosci wzdluz krawedzi, przycieta
+            # do wnetrza ksztaltu, daje rowny obrys - i w odroznieniu od
+            # erozji maski nie kosztuje setek ms na duzym ksztalcie.
+            line = Image.new("L", outer.size, 0)
+            pts = sub._flat(shape[1])
+            ImageDraw.Draw(line).line(pts + pts[:1], fill=255,
+                                      width=max(1, int(round(2 * width * self.ss))),
+                                      joint="curve")
+            ring = ImageChops.multiply(outer, line)
+        else:
+            inner = sub.mask(grow(shape, -width))
+            ring = Image.composite(Image.new("L", outer.size, 0), outer, inner)
         sub.img.alpha_composite(sub._tinted(color, _scale_alpha(ring, alpha)))
         self.paste(sub)
 
@@ -321,8 +335,17 @@ class Paint:
                clip: Optional[Shape] = None) -> None:
         """Przejscie od srodka (inner) do brzegu kola r (outer)."""
         sub = self._sub((cx - r, cy - r, cx + r, cy + r))
-        size = max(2, int(round(r * 2 * self.ss)))
-        g = Image.radial_gradient("L").resize((size, size), Image.BILINEAR)
+        # Przejscie jest gladkie, wiec liczymy je w zwyklej rozdzielczosci i
+        # dopiero gotowa warstwe powiekszamy - w powiekszeniu SS duza
+        # poswiata (r = 300) to obraz 2400 x 2400 i kilkadziesiat ms.
+        size = max(2, int(round(r * 2)))
+        g = Image.radial_gradient("L")
+        # Pillow dochodzi do 255 dopiero w rogach kwadratu - na brzegu kola
+        # jest ~181, wiec po przycieciu do kola zostawal widoczny luk.
+        # Rozciagamy tak, zeby przejscie konczylo sie dokladnie na brzegu.
+        edge = max(1, g.getpixel((g.width - 1, g.height // 2)))
+        g = g.point(lambda v: min(255, v * 255 // edge))
+        g = g.resize((size, size), Image.BILINEAR)
         a_in, a_out = rgba(inner, alpha_in), rgba(outer, alpha_out)
         luts = []
         for i in range(4):
@@ -334,9 +357,10 @@ class Paint:
         ImageDraw.Draw(circle).ellipse((0, 0, size - 1, size - 1), fill=255)
         disc.putalpha(Image.composite(disc.getchannel("A"),
                                       Image.new("L", (size, size), 0), circle))
-        layer = Image.new("RGBA", sub.img.size, (0, 0, 0, 0))
-        layer.alpha_composite(disc, (int(round(sub._x(cx - r))),
-                                     int(round(sub._y(cy - r)))))
+        small = Image.new("RGBA", (sub.w, sub.h), (0, 0, 0, 0))
+        small.alpha_composite(disc, (int(round(cx - r - sub.ox)),
+                                     int(round(cy - r - sub.oy))))
+        layer = small.resize(sub.img.size, Image.BILINEAR)
         if clip is not None:
             a = layer.getchannel("A")
             layer.putalpha(Image.composite(a, Image.new("L", a.size, 0),
@@ -440,9 +464,16 @@ class CapStyle:
     warn: str                   # kolor nauki
     ink: str                    # ciemny napis na jasnym tle
     gloss: bool = True          # polysk wypuklego plastiku (wglebienie - nie)
+    #: obrys przypisanej kontrolki; pusty = akcent (przezroczysty), jak dotad
+    assigned: str = ""
 
 
-GLOW_MARGIN = 10                # zapas wokol kontrolki na poswiate
+#: Zapas wokol kontrolki na poswiate. Poswiata (glow, radius=6) to rozmycie
+#: Gaussa, ktore gasnie dopiero ~3 promienie dalej - przy 10 px obrazek
+#: ucinal ja prostokatem i wokol wcisnietego przycisku widac bylo kwadrat.
+GLOW_MARGIN = 22
+#: Bez poswiaty wystarczy zapas na cien - mniejszy obrazek, szybszy start.
+SHADOW_MARGIN = 10
 
 
 def render_cap(shape: Shape, state: str, style: CapStyle,
@@ -450,7 +481,8 @@ def render_cap(shape: Shape, state: str, style: CapStyle,
                shadow: bool = True) -> Tuple[Image.Image, Tuple[int, int]]:
     """Obrazek kontrolki w danym stanie + polozenie lewego gornego rogu."""
     x1, y1, x2, y2 = shape_bbox(shape)
-    m = GLOW_MARGIN
+    m = (GLOW_MARGIN if state in ("active", "learn_on", "hover")
+         else SHADOW_MARGIN)
     ox, oy = math.floor(x1 - m), math.floor(y1 - m)
     w, h = math.ceil(x2 + m) - ox, math.ceil(y2 + m) - oy
     p = Paint(w, h, (ox, oy))
@@ -484,7 +516,10 @@ def render_cap(shape: Shape, state: str, style: CapStyle,
     elif state == "hover":
         edge, edge_w = style.accent, 2.0
     elif state == "assigned":
-        edge, edge_w, edge_a = style.accent, 1.5, 170
+        if style.assigned:
+            edge, edge_w = style.assigned, 1.5
+        else:
+            edge, edge_w, edge_a = style.accent, 1.5, 170
     elif state in ("active", "learn_on"):
         edge, edge_a = "#ffffff", 70
     p.stroke(shape, edge, edge_w, alpha=edge_a)

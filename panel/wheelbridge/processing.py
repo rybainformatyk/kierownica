@@ -29,6 +29,47 @@ def _clamp_sym(v: float) -> float:
     return -1.0 if v < -1.0 else (1.0 if v > 1.0 else v)
 
 
+# Krzywe jako czyste funkcje: liczy nimi przetwarzanie ramek i rysuje je
+# podglad w panelu - wykres nie moze sie rozjechac z tym, co dostaje gra.
+
+def pedal_position(raw: int, cfg: PedalConfig) -> float:
+    """Surowy ADC -> wcisniecie 0..1 po kalibracji i odwroceniu."""
+    lo, hi = cfg.raw_min, cfg.raw_max
+    if hi == lo:
+        value = 0.0
+    else:
+        value = (raw - lo) / (hi - lo)
+    value = _clamp01(value)
+    if cfg.invert:
+        value = 1.0 - value
+    return value
+
+
+def pedal_curve(value: float, cfg: PedalConfig) -> float:
+    """Wcisniecie 0..1 -> wyjscie 0..1: martwe strefy i gamma (bez filtra)."""
+    # Martwa strefa: rozciagamy przedzial [dz_low, 1-dz_high] na pelne 0..1
+    dz_lo = cfg.deadzone_low
+    dz_hi = cfg.deadzone_high
+    span = 1.0 - dz_lo - dz_hi
+    if span <= 1e-6:
+        value = 0.0 if value < 0.5 else 1.0
+    else:
+        value = _clamp01((value - dz_lo) / span)
+
+    if cfg.gamma != 1.0:
+        value = value ** cfg.gamma
+    return value
+
+
+def steer_curve(axis: float, linearity: float) -> float:
+    """Os -1..1 -> os -1..1 po krzywej liniowosci."""
+    axis = _clamp_sym(axis)
+    if linearity != 1.0:
+        sign = -1.0 if axis < 0 else 1.0
+        axis = sign * (abs(axis) ** linearity)
+    return axis
+
+
 class PedalProcessor:
     """Surowy ADC -> 0..1 z kalibracja, martwa strefa, krzywa i filtrem."""
 
@@ -41,27 +82,7 @@ class PedalProcessor:
         self._primed = False
 
     def process(self, raw: int, cfg: PedalConfig) -> float:
-        lo, hi = cfg.raw_min, cfg.raw_max
-        if hi == lo:
-            value = 0.0
-        else:
-            value = (raw - lo) / (hi - lo)
-        value = _clamp01(value)
-
-        if cfg.invert:
-            value = 1.0 - value
-
-        # Martwa strefa: rozciagamy przedzial [dz_low, 1-dz_high] na pelne 0..1
-        dz_lo = cfg.deadzone_low
-        dz_hi = cfg.deadzone_high
-        span = 1.0 - dz_lo - dz_hi
-        if span <= 1e-6:
-            value = 0.0 if value < 0.5 else 1.0
-        else:
-            value = _clamp01((value - dz_lo) / span)
-
-        if cfg.gamma != 1.0:
-            value = value ** cfg.gamma
+        value = pedal_curve(pedal_position(raw, cfg), cfg)
 
         a = cfg.smoothing
         if a > 0.0:
@@ -135,11 +156,7 @@ class SteerProcessor:
             self._last_t = now
 
         half = max(1.0, cfg.range_deg / 2.0)
-        axis = _clamp_sym(deg / half)
-
-        if cfg.linearity != 1.0:
-            sign = -1.0 if axis < 0 else 1.0
-            axis = sign * (abs(axis) ** cfg.linearity)
+        axis = steer_curve(deg / half, cfg.linearity)
 
         return deg, axis
 
