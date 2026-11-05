@@ -100,7 +100,30 @@ python -m pip install -r requirements.txt
 Instaluje pyserial (łącze z płytką) i Pillow (wygładzone rysunki pada i
 kierownicy).
 
-Uruchomienie: `Kierownica.bat` albo `python kierownica.py`.
+Uruchomienie: `Kierownica.bat` albo `python kierownica.py`
+(`--minimized` — start zminimalizowany).
+
+### Praca w tle
+
+W trybie G29 gry widzą kierownicę tylko wtedy, gdy panel działa, więc
+panel jest zrobiony tak, żeby mógł chodzić cały czas:
+
+* **Uruchamianie razem z Windowsem** — pole w Diagnostyce (karta
+  *Uruchamianie*). Panel startuje zminimalizowany, bez okna konsoli, i sam
+  łączy się z płytką. Wpis trafia do klucza `Run` użytkownika (bez
+  uprawnień administratora); gdy wskazuje inną kopię panelu, karta to mówi.
+* **Jedna kopia naraz** — ponowne uruchomienie przywraca okno, które już
+  działa, zamiast startować drugi panel, który walczyłby z pierwszym o port
+  COM i urządzenie vJoy.
+* **Mniej rysowania za grą** — gdy okno jest zminimalizowane albo w całości
+  zasłonięte (np. przez grę na pełnym ekranie), podgląd odświeża się
+  5 razy na sekundę zamiast 60. Łącza z płytką i raportów dla gry to nie
+  dotyczy.
+* **Stan w tytule okna** — „połączono (COM5)”, „szukanie płytki”… widać na
+  pasku zadań i w Alt+Tab. Gdy płytka zniknie, a panel jest w tle, jego
+  przycisk na pasku zadań mruga.
+* Panel pamięta położenie i rozmiar okna oraz ostatnią zakładkę (okno spoza
+  odłączonego monitora wraca na środek ekranu).
 
 ### Sterowniki
 
@@ -154,7 +177,10 @@ Bez sterowników aplikacja nadal działa w trybie podglądu.
 Ustawienia lądują w `config.json` obok aplikacji — przy **Zapisz
 ustawienia** (obok przycisku pojawia się potwierdzenie) i przy zamknięciu
 okna. Dopóki zmiany nie są zapisane, obok przycisku świeci się
-„● Niezapisane zmiany”.
+„● Niezapisane zmiany”. Uszkodzony fragment pliku (np. po ręcznej edycji)
+dostaje wartości domyślne tylko u siebie, a plik, którego w ogóle nie da się
+odczytać, panel odkłada jako `config.json.bad`, zanim zacznie od ustawień
+domyślnych — nic nie przepada po cichu.
 
 ### Skróty klawiszowe
 
@@ -194,6 +220,20 @@ przycisków, flagi) z częstotliwością 50–500 Hz. PC odsyła `FFB`, `CENTER`
 `SET_ENDSTOP`, `SET_RATE`, konfigurację i — w trybie G29 — `G29` z gotowym
 12-bajtowym raportem oraz `G29_USB` (podłącz / odłącz G29). Płytka odsyła `G29_OUT`, gdy gra wyśle coś do G29. Opis typów: `wheelbridge/protocol.py`
 — musi być zgodny z sekcją protokołu w `.ino`.
+
+## Testy
+
+```
+python -m pip install pytest
+python -m pytest
+```
+
+(z katalogu `panel`). Testy nie potrzebują płytki ani sterowników: łącze
+z płytką, vJoy i pad ViGEm są podmienione, konfiguracja idzie do katalogu
+tymczasowego, a autostart do osobnego klucza rejestru. Sprawdzają m.in.
+protokół, odporność `config.json`, przełączanie vJoy w tle, wyścig przy
+zamykaniu pada, całą ścieżkę na wątkach z udawaną płytką, geometrię
+rysunku G29 i okno panelu.
 
 ## Bezpieczeństwo Force Feedback
 

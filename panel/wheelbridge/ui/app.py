@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -16,8 +17,10 @@ from tkinter import messagebox, ttk
 from typing import Dict, List, Optional, Tuple
 
 from .. import __version__ as APP_VERSION
+from .. import config as config_mod
 from .. import link as link_mod
 from .. import protocol
+from .. import winsys
 from ..config import (AppConfig, G29_CONTROL_LABELS, G29_CONTROLS,
                       OUTPUT_MODE_LABELS, OUTPUT_MODES,
                       PAD_BUTTON_NAMES, PAD_DIRECTION_LABELS, PAD_DIRECTIONS,
@@ -50,6 +53,8 @@ VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
 #: Skrypt wgrywania firmware z tego repozytorium (panel/../firmware).
 FIRMWARE_SCRIPT = (Path(__file__).resolve().parents[3] / "firmware"
                    / "kierownica" / "wgraj_firmware.bat")
+#: Skrypt startowy panelu - to on trafia do autostartu Windows.
+PANEL_SCRIPT = Path(__file__).resolve().parents[2] / "kierownica.py"
 
 RANGE_PRESETS = (120, 270, 360, 540, 720, 900, 1080)
 
@@ -71,8 +76,9 @@ TAB_ICONS = ("\uEC4A", "\uE713", "\uE9E9", "\uE8A9", "\uE804", "\uE7FC",
 UI_FPS = 60                  # klatek na sekunde podgladu
 UI_PERIOD_S = 1.0 / UI_FPS
 UI_IDLE_PERIOD_S = 0.2       # okno zminimalizowane - podgladu i tak nie widac
-TICK_ERROR_REPEAT_S = 5.0    # ten sam blad odswiezania w dzienniku najwyzej tak czesto
+TICK_ERROR_REPEAT_S = 5.0    # ten sam blad w dzienniku najwyzej tak czesto
 G29_DETECT_S = 5.0           # tyle Windows ma na wyliczenie ponownie podlaczonej G29
+HIDDEN_CHECK_S = 0.25        # co ile sprawdzamy, czy okno jest zasloniete
 
 
 def _hires_timer(on: bool) -> None:
@@ -125,16 +131,24 @@ class PanelApp:
     TAB_DASH, TAB_STEER, TAB_PEDALS, TAB_BUTTONS = 0, 1, 2, 3
     TAB_G29, TAB_PAD, TAB_FFB, TAB_DIAG = 4, 5, 6, 7
 
-    def __init__(self) -> None:
+    def __init__(self, minimized: bool = False) -> None:
         self.cfg = AppConfig.load()
+        load_problem = config_mod.last_load_problem
         self._saved_snapshot = self._config_snapshot()
         self._log_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=2000)
         self.engine = WheelEngine(self.cfg, on_log=self._enqueue_log)
 
         self.root = tk.Tk()
-        self.root.title(f"{APP_TITLE} {APP_VERSION}")
+        self._title = f"{APP_TITLE} {APP_VERSION}"
+        self.root.title(self._title)
         self.root.minsize(940, 600)
         self.root.configure(bg=theme.BG)
+        # Blad w obsludze klikniecia Tk wypisuje tylko na konsole - bez
+        # konsoli (pythonw, autostart) znikal bez sladu. Trafia do dziennika.
+        self.root.report_callback_exception = self._on_tk_error
+        #: Polozenie zwyklego okna i jego stan - zapisywane przy zamknieciu
+        self._normal_geometry = ""
+        self._window_state = "normal"
         self._place_window(1240, 880)
         self._set_icon()
 
@@ -153,13 +167,17 @@ class PanelApp:
         self._closing = False
         self._next_frame = 0.0
         self._spark_t = 0.0
-        self._tick_error = ""
-        self._tick_error_t = 0.0
+        self._last_error = ""
+        self._last_error_t = 0.0
         self._vjoy_was_switching = False
         self._copied_token = 0
         #: Okno wgrywania firmware (wgraj_firmware.bat), gdy trwa
         self._flash_proc: Optional[subprocess.Popen] = None
         self._flash_reconnect = False
+        #: Okno w calosci zasloniete (gra na pelnym ekranie) - mniej klatek
+        self._hidden = False
+        self._hidden_t = 0.0
+        self._was_connected = False
 
         _hires_timer(True)
         # Watek lacza oddaje GIL co 5 ms (domyslnie) - interfejs czekal
@@ -169,6 +187,14 @@ class PanelApp:
 
         self._build()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<Configure>", self._on_root_configure, add="+")
+        if 0 < self.cfg.ui.tab < len(TAB_NAMES):
+            self.nb.select(self.cfg.ui.tab)
+        if self.cfg.ui.zoomed:
+            self.root.state("zoomed")
+        if minimized:
+            # autostart z Windowsem - panel ma dzialac, a nie zaslaniac pulpit
+            self.root.iconify()
         # Okno zbudowane: tysiace obiektow, ktore zyja do konca. Zamrozone
         # nie sa przegladane przy kazdym sprzataniu pamieci - wczesniej
         # takie sprzatanie potrafilo zatrzymac podglad na kilkadziesiat ms.
@@ -177,18 +203,33 @@ class PanelApp:
 
         self.engine.start()
         self._log("info", f"Konfiguracja: {config_path()}")
+        if load_problem:
+            self._log("warn", load_problem)
         self._next_frame = time.perf_counter() + UI_PERIOD_S
-        self.root.after(int(UI_PERIOD_S * 1000), self._tick)
+        self._tick_job = self.root.after(int(UI_PERIOD_S * 1000), self._tick)
 
     def run(self) -> None:
         self.root.mainloop()
 
     def _place_window(self, want_w: int, want_h: int) -> None:
-        """Dopasowuje okno do ekranu i ustawia je na srodku.
+        """Okno tam, gdzie bylo przy zamknieciu, a pierwszy raz - na srodku.
 
-        Na malym laptopie (np. 1366x768) okno nie moze byc wieksze niz pulpit,
-        inaczej dolna czesc interfejsu wychodzi poza ekran.
+        Zapamietane polozenie bierzemy tylko wtedy, gdy pasek tytulu lezy na
+        ktoryms monitorze (inaczej okno z odlaczonego monitora byloby nie do
+        zlapania), a rozmiar przycinamy do tego monitora. Na malym laptopie
+        (np. 1366x768) okno nie moze byc wieksze niz pulpit, inaczej dolna
+        czesc interfejsu wychodzi poza ekran.
         """
+        saved = winsys.parse_geometry(self.cfg.ui.geometry)
+        if saved is not None:
+            w, h, x, y = saved
+            work = winsys.work_area_at(x, y, w)
+            if work is not None:
+                w = max(940, min(w, work[2] - work[0]))
+                h = max(600, min(h, work[3] - work[1]))
+                self._normal_geometry = f"{w}x{h}+{x}+{y}"
+                self.root.geometry(self._normal_geometry)
+                return
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         w = max(940, min(want_w, screen_w - 80))
@@ -196,6 +237,31 @@ class PanelApp:
         x = max(0, (screen_w - w) // 2)
         y = max(0, (screen_h - h) // 3)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _on_root_configure(self, event) -> None:
+        """Zapamietuje polozenie zwyklego okna - zmaksymalizowane podaje
+        rozmiar ekranu, wiec do zapisu sie nie nadaje."""
+        if event.widget is not self.root:
+            return
+        try:
+            state = self.root.state()
+        except tk.TclError:
+            return
+        if state == "normal":
+            self._normal_geometry = self.root.geometry()
+        if state in ("normal", "zoomed"):
+            self._window_state = state
+
+    def _store_ui_state(self) -> None:
+        """Polozenie okna i zakladka do cfg.ui - przed zapisem pliku."""
+        ui = self.cfg.ui
+        if self._normal_geometry:
+            ui.geometry = self._normal_geometry
+        ui.zoomed = self._window_state == "zoomed"
+        try:
+            ui.tab = self.nb.index(self.nb.select())
+        except tk.TclError:
+            pass
 
     def _window_handle(self) -> int:
         """Uchwyt okna glownego (HWND) - okno UAC ma wyskoczyc nad nim.
@@ -1151,9 +1217,11 @@ class PanelApp:
         parent.grid_columnconfigure(0, weight=0)
         parent.grid_columnconfigure(1, weight=1)
 
-        # --- lacze ---
-        c1 = Card(parent, "Łącze szeregowe", self.fonts)
-        c1.grid_card(row=0, column=0, sticky="new", padx=(0, 10))
+        # --- lewa kolumna: lacze nad uruchamianiem ---
+        leftcol = ttk.Frame(parent, style="Root.TFrame")
+        leftcol.grid(row=0, column=0, sticky="new", padx=(0, 10))
+        c1 = Card(leftcol, "Łącze szeregowe", self.fonts)
+        c1.place_card(fill="x")
         self.diag_rows: Dict[str, StatRow] = {}
         for key, label in (("port", "Port"), ("fw", "Firmware"),
                            ("fps", "Ramki na sekundę"), ("bps", "Przepływ"),
@@ -1195,6 +1263,27 @@ class PanelApp:
             text="Zwalnia port, otwiera okno wgrywania (wgraj_firmware.bat) "
                  "i łączy się ponownie, gdy je zamkniesz."),
             cap=260).pack(anchor="w", pady=(4, 0))
+
+        # --- uruchamianie razem z Windowsem ---
+        c0 = Card(leftcol, "Uruchamianie", self.fonts)
+        c0.place_card(fill="x", pady=(10, 0))
+        self.var_autostart = tk.BooleanVar(value=False)
+        self.chk_autostart = ttk.Checkbutton(
+            c0.body, text="Uruchamiaj razem z Windowsem",
+            variable=self.var_autostart, command=self._on_autostart)
+        self.chk_autostart.pack(anchor="w")
+        if not winsys.IS_WINDOWS:
+            self.chk_autostart.state(["disabled"])
+        fit_wrap(ttk.Label(
+            c0.body, style="Muted.TLabel", wraplength=250, justify="left",
+            text="Panel startuje zminimalizowany i sam łączy się z płytką. "
+                 "W trybie G29 gry widzą kierownicę tylko wtedy, gdy panel "
+                 "działa."), cap=260).pack(anchor="w", pady=(4, 0))
+        # inna kopia panelu w autostarcie - pokazywane tylko wtedy
+        self.lbl_autostart_other = fit_wrap(ttk.Label(
+            c0.body, text="", style="Warn.TLabel", wraplength=250,
+            justify="left"), cap=260)
+        self._sync_autostart()
 
         # --- prawa kolumna: G29 nad vJoy ---
         rightcol = ttk.Frame(parent, style="Root.TFrame")
@@ -1496,6 +1585,43 @@ class PanelApp:
         where = f"przez {port}" if port else "(skrypt sam znajdzie port)"
         self._log("info", f"Wgrywanie firmware {where} - panel połączy się "
                           "po zamknięciu okna wgrywania")
+
+    def _sync_autostart(self) -> None:
+        """Pole "Uruchamiaj razem z Windowsem" wedlug tego, co jest w rejestrze.
+
+        Zaznaczone tylko wtedy, gdy autostart wskazuje te kopie panelu. Inna
+        kopia (np. przeniesiony katalog) dostaje ostrzezenie zamiast po cichu
+        przejac wpis - przy dwoch kopiach latwo podmienic nie te.
+        """
+        command = winsys.autostart_get()
+        script = winsys.autostart_script(command)
+        ours = (script is not None and os.path.normcase(script)
+                == os.path.normcase(str(PANEL_SCRIPT)))
+        self.var_autostart.set(ours)
+        if command is not None and not ours:
+            self.lbl_autostart_other.configure(
+                text=f"Teraz z Windowsem startuje inna kopia panelu: "
+                     f"{script or command}. Zaznaczenie przełączy autostart "
+                     f"na tę kopię.")
+            if not self.lbl_autostart_other.winfo_manager():
+                self.lbl_autostart_other.pack(anchor="w", pady=(6, 0))
+        elif self.lbl_autostart_other.winfo_manager():
+            self.lbl_autostart_other.pack_forget()
+
+    def _on_autostart(self) -> None:
+        want = bool(self.var_autostart.get())
+        try:
+            winsys.autostart_set(winsys.autostart_command(PANEL_SCRIPT)
+                                 if want else None)
+        except OSError as exc:
+            messagebox.showerror("Uruchamianie z Windowsem",
+                                 f"Nie udało się zmienić autostartu:\n{exc}",
+                                 parent=self.root)
+        else:
+            self._log("ok" if want else "info",
+                      "Panel będzie startował razem z Windowsem" if want
+                      else "Panel nie startuje już razem z Windowsem")
+        self._sync_autostart()
 
     def _poll_flash(self) -> None:
         """Okno wgrywania zamkniete - wracamy do plytki."""
@@ -2156,7 +2282,10 @@ class PanelApp:
         self.txt_vjoy.configure(state="normal")
         self.txt_vjoy.delete("1.0", "end")
         self.txt_vjoy.insert("1.0", "\n".join(lines))
-        self.txt_vjoy.configure(state="disabled")
+        # Pole rosnie razem z trescia - przy stalych 9 wierszach czesc
+        # o padzie (ViGEm) chowala sie pod spodem, a karta i tak sie przewija.
+        self.txt_vjoy.configure(state="disabled",
+                                height=max(9, min(len(lines) + 1, 32)))
 
     def _on_report_hz(self, value: float) -> None:
         self.cfg.link.report_hz = int(value)
@@ -2219,9 +2348,13 @@ class PanelApp:
         self.root.after(3000, clear)
 
     def _config_snapshot(self) -> str:
-        return json.dumps(self.cfg.to_dict(), sort_keys=True)
+        # polozenie okna i zakladka to nie ustawienia - bez "niezapisanych"
+        data = self.cfg.to_dict()
+        data.pop("ui", None)
+        return json.dumps(data, sort_keys=True)
 
     def _save_config(self) -> None:
+        self._store_ui_state()
         try:
             path = self.cfg.save()
         except OSError as exc:
@@ -2254,6 +2387,7 @@ class PanelApp:
         if self._closing:
             return
         self._closing = True
+        self._store_ui_state()
         try:
             self.cfg.save()
         except OSError:
@@ -2263,6 +2397,10 @@ class PanelApp:
         except Exception:
             pass
         _hires_timer(False)
+        try:
+            self.root.after_cancel(self._tick_job)  # klatka juz zaplanowana
+        except (tk.TclError, ValueError):
+            pass
         self.root.destroy()
 
     # ================================================== odswiezanie widoku
@@ -2273,19 +2411,63 @@ class PanelApp:
         try:
             self._refresh()
         except Exception as exc:                 # interfejs nie moze przerwac petli
-            # Ten sam blad wraca co klatke - 60 wpisow na sekunde zapchaloby
-            # dziennik i zamulilo okno. Powtorke wpisujemy raz na 5 s.
-            tb = traceback.extract_tb(exc.__traceback__)
-            where = f" [{Path(tb[-1].filename).name}:{tb[-1].lineno}]" if tb else ""
-            text = f"Błąd odświeżania: {exc!r}{where}"
-            now = time.monotonic()
-            if (text != self._tick_error
-                    or now - self._tick_error_t > TICK_ERROR_REPEAT_S):
-                self._tick_error, self._tick_error_t = text, now
-                self._enqueue_log("error", text)
+            self._log_error(f"Błąd odświeżania: {exc!r}", exc.__traceback__)
         finally:
             if not self._closing:
                 self._schedule_tick()
+
+    def _window_hidden(self) -> bool:
+        """Czy okna na pewno nie widac (winsys.window_hidden).
+
+        Widoczne sprawdzamy co HIDDEN_CHECK_S, zasloniete - co klatke: po
+        Alt+Tab do panelu podglad ma od razu ruszyc plynnie.
+        """
+        now = time.monotonic()
+        if not self._hidden and now - self._hidden_t < HIDDEN_CHECK_S:
+            return False
+        self._hidden_t = now
+        self._hidden = winsys.window_hidden(self.engine.ui_hwnd)
+        return self._hidden
+
+    def _refresh_title(self, state: str, port: str) -> None:
+        """Stan lacza w tytule okna - widac go na pasku zadan i w Alt+Tab,
+        takze gdy panel stoi za gra."""
+        if self._flash_proc is not None:
+            status = "wgrywanie firmware"
+        elif state == link_mod.CONNECTED:
+            status = f"połączono ({port})" if port else "połączono"
+        elif state == link_mod.SCANNING:
+            status = "szukanie płytki"
+        else:
+            status = "rozłączono"
+        title = f"{APP_TITLE} {APP_VERSION} · {status}"
+        if title != self._title:
+            self._title = title
+            self.root.title(title)
+
+    def _log_error(self, text: str, tb) -> None:
+        """Blad do dziennika z miejscem w kodzie.
+
+        Ten sam blad potrafi wracac co klatke - 60 wpisow na sekunde
+        zapchaloby dziennik i zamulilo okno, wiec powtorke wpisujemy
+        najwyzej raz na TICK_ERROR_REPEAT_S.
+        """
+        frames = traceback.extract_tb(tb) if tb is not None else []
+        if frames:
+            text += f" [{Path(frames[-1].filename).name}:{frames[-1].lineno}]"
+        now = time.monotonic()
+        if (text != self._last_error
+                or now - self._last_error_t > TICK_ERROR_REPEAT_S):
+            self._last_error, self._last_error_t = text, now
+            self._enqueue_log("error", text)
+
+    def _on_tk_error(self, exc, val, tb) -> None:
+        """Wyjatek w obsludze klikniecia albo zdarzenia Tk."""
+        self._log_error(f"Błąd w oknie: {val!r}", tb)
+        try:
+            traceback.print_exception(exc, val, tb)     # i na konsole, gdy jest
+        except Exception:
+            pass
 
     def _schedule_tick(self) -> None:
         """Nastepna klatka wedlug stalego rytmu, a nie "za 16 ms od teraz".
@@ -2293,12 +2475,14 @@ class PanelApp:
         Liczenie od konca odswiezania doklada jego czas do kazdej klatki i
         rytm plywa. Po dluzszym zatrzymaniu (np. przeciaganie okna) nie
         nadrabiamy zaleglych klatek, tylko zaczynamy rytm od nowa.
-        Zminimalizowane okno odswiezamy rzadko - w trakcie gry panel nie
-        zabiera jej procesora na rysowanie, ktorego nikt nie widzi.
+        Zminimalizowane albo w calosci zasloniete okno (gra na pelnym
+        ekranie) odswiezamy rzadko - w trakcie gry panel nie zabiera jej
+        procesora na rysowanie, ktorego nikt nie widzi (Pulpit to ok. 1/6
+        rdzenia).
         """
         period = UI_PERIOD_S
         try:
-            if self.root.state() == "iconic":
+            if self.root.state() == "iconic" or self._window_hidden():
                 period = UI_IDLE_PERIOD_S
         except tk.TclError:
             pass
@@ -2307,7 +2491,7 @@ class PanelApp:
         if self._next_frame < now:
             self._next_frame = now + period
         delay_ms = max(1, int(round((self._next_frame - now) * 1000)))
-        self.root.after(delay_ms, self._tick)
+        self._tick_job = self.root.after(delay_ms, self._tick)
 
     def _refresh(self) -> None:
         """Jedna klatka podgladu.
@@ -2335,6 +2519,14 @@ class PanelApp:
 
         # --- naglowek ---
         self._poll_flash()
+        self._refresh_title(state, stats.port)
+        if self._was_connected and state in (link_mod.SCANNING, link_mod.ERROR):
+            # Plytka zniknela sama (nie "Rozlacz") - przy grze na pierwszym
+            # planie nikt nie patrzy na panel, wiec mruga pasek zadan.
+            if (self._flash_proc is None
+                    and not winsys.is_foreground(self.engine.ui_hwnd)):
+                winsys.flash_taskbar(self.engine.ui_hwnd)
+        self._was_connected = connected
         if self._flash_proc is not None:
             self.dot_link.set(theme.WARN)
             set_(self.lbl_link, text="wgrywanie firmware…", fg=theme.WARN)
@@ -2734,7 +2926,22 @@ def _fmt_duration(seconds: float) -> str:
 
 
 def main() -> None:
-    app = PanelApp()
+    # Druga kopia walczylaby z pierwsza o port COM (szukalaby plytki bez
+    # konca) i o urzadzenie vJoy - zamiast niej na wierzch idzie okno, ktore
+    # juz dziala (np. zminimalizowane z autostartu).
+    if not winsys.claim_single_instance():
+        if not winsys.bring_to_front(APP_TITLE):
+            _show_already_running()
+        return
+    app = PanelApp(minimized="--minimized" in sys.argv[1:])
     app._update_vjoy_text()
     app._sync_pedal_widgets()
     app.run()
+
+
+def _show_already_running() -> None:
+    """Panel dziala, ale jego okna nie ma jeszcze na ekranie (np. startuje)."""
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo(APP_TITLE, "Panel kierownicy już działa.", parent=root)
+    root.destroy()

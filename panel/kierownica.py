@@ -4,6 +4,7 @@ Panel kierownicy - punkt wejscia.
 
 Uruchomienie:
     python kierownica.py
+    python kierownica.py --minimized    (start zminimalizowany - autostart)
 
 Wymagania: Python 3.9+, pyserial, Pillow (rysunki pada i kierownicy).
 Do tego, zeby gry widzialy kierownice w trybie vJoy, potrzebny jest

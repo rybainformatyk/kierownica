@@ -480,6 +480,16 @@ class OutputConfig:
 
 
 @dataclass
+class UiConfig:
+    """Okno panelu - zapamietywane przy zamknieciu, to nie sa ustawienia
+    kierownicy (zmiana zakladki nie robi "niezapisanych zmian")."""
+    #: "SZERxWYS+X+Y" zwyklego (niezmaksymalizowanego) okna, "" = na srodku
+    geometry: str = ""
+    zoomed: bool = False
+    tab: int = 0
+
+
+@dataclass
 class AppConfig:
     link: LinkConfig = field(default_factory=LinkConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -489,6 +499,7 @@ class AppConfig:
     buttons: ButtonsConfig = field(default_factory=ButtonsConfig)
     pad: PadConfig = field(default_factory=PadConfig)
     g29: G29Config = field(default_factory=G29Config)
+    ui: UiConfig = field(default_factory=UiConfig)
 
     def __post_init__(self) -> None:
         for i, key in enumerate(PEDAL_KEYS):
@@ -507,11 +518,15 @@ class AppConfig:
         config nie moze wywrocic aplikacji.
         """
         s = self.steer
-        s.counts_per_rev = max(4, min(2_000_000, int(s.counts_per_rev)))
-        s.range_deg = max(45, min(1800, int(s.range_deg)))
+        s.counts_per_rev = max(4, min(2_000_000, _as_int(
+            s.counts_per_rev, SteerConfig.counts_per_rev)))
+        s.range_deg = max(45, min(1800, _as_int(s.range_deg,
+                                                SteerConfig.range_deg)))
         s.smoothing = _clamp(s.smoothing, 0.0, 0.95)
         s.linearity = _clamp(s.linearity, 0.3, 3.0)
-        s.endstop_gain = max(1, min(65535, int(s.endstop_gain)))
+        s.endstop_gain = max(1, min(65535, _as_int(s.endstop_gain,
+                                                   SteerConfig.endstop_gain)))
+        s.center_counts = _as_int(s.center_counts, 0)
         if s.vjoy_axis not in VJOY_AXIS_CHOICES:
             s.vjoy_axis = "X"
 
@@ -519,11 +534,11 @@ class AppConfig:
             p = self.pedals.get(key)
             if p is None:
                 p = self.pedals[key] = PedalConfig()
-            p.source = int(p.source)
+            p.source = _as_int(p.source, -1)
             if not (-1 <= p.source < protocol.NUM_AXES):
                 p.source = -1
-            p.raw_min = max(0, min(4095, int(p.raw_min)))
-            p.raw_max = max(0, min(4095, int(p.raw_max)))
+            p.raw_min = max(0, min(4095, _as_int(p.raw_min, 0)))
+            p.raw_max = max(0, min(4095, _as_int(p.raw_max, 4095)))
             if p.raw_min > p.raw_max:
                 # odwrocony zakres zapisujemy jako normalny + flaga inwersji,
                 # zeby dalej w kodzie min < max bylo zawsze prawda
@@ -543,11 +558,15 @@ class AppConfig:
         f.min_force = _clamp(f.min_force, 0.0, 0.5)
         f.max_force = _clamp(f.max_force, 0.05, 1.0)
         f.deadband = _clamp(f.deadband, 0.0, 0.2)
-        f.slew_per_ms = max(256, min(65280, int(f.slew_per_ms)))
-        f.timeout_ms = max(20, min(2000, int(f.timeout_ms)))
-        f.min_duty = max(0, min(254, int(f.min_duty)))
-        f.max_duty = max(f.min_duty + 1, min(255, int(f.max_duty)))
-        f.update_hz = max(50, min(1000, int(f.update_hz)))
+        f.slew_per_ms = max(256, min(65280, _as_int(f.slew_per_ms,
+                                                    FfbConfig.slew_per_ms)))
+        f.timeout_ms = max(20, min(2000, _as_int(f.timeout_ms,
+                                                 FfbConfig.timeout_ms)))
+        f.min_duty = max(0, min(254, _as_int(f.min_duty, FfbConfig.min_duty)))
+        f.max_duty = max(f.min_duty + 1, min(255, _as_int(f.max_duty,
+                                                          FfbConfig.max_duty)))
+        f.update_hz = max(50, min(1000, _as_int(f.update_hz,
+                                                FfbConfig.update_hz)))
         for name in ("spring_gain", "damper_gain", "friction_gain"):
             setattr(f, name, _clamp(getattr(f, name), 0.0, 1.0))
         for name in ("game_constant_gain", "game_spring_gain",
@@ -557,18 +576,20 @@ class AppConfig:
             f.direction_mode = "auto"
 
         b = self.buttons
-        mapping = [int(x) for x in (b.mapping or [])][:protocol.NUM_BUTTONS]
+        mapping = [_as_int(x, i + 1) for i, x in enumerate(_as_list(b.mapping))
+                   ][:protocol.NUM_BUTTONS]
         mapping += list(range(len(mapping) + 1, protocol.NUM_BUTTONS + 1))
         b.mapping = [max(0, min(128, v)) for v in mapping[:protocol.NUM_BUTTONS]]
-        hat = [int(x) for x in (b.hat or [])][:4]
+        hat = [_as_int(x, -1) for x in _as_list(b.hat)][:4]
         hat += [-1] * (4 - len(hat))
         b.hat = [v if -1 <= v < protocol.NUM_BUTTONS else -1 for v in hat]
-        inv = [bool(x) for x in (b.invert or [])][:protocol.NUM_BUTTONS]
+        inv = [bool(x) for x in _as_list(b.invert)][:protocol.NUM_BUTTONS]
         inv += [False] * (protocol.NUM_BUTTONS - len(inv))
         b.invert = inv
 
         d = self.pad
-        d.steer_range_deg = max(45, min(1800, int(d.steer_range_deg)))
+        d.steer_range_deg = max(45, min(1800, _as_int(
+            d.steer_range_deg, PadConfig.steer_range_deg)))
         d.steer_deadzone = _clamp(d.steer_deadzone, 0.0, 0.45)
         d.steer_antideadzone = _clamp(d.steer_antideadzone, 0.0, 0.60)
         d.trigger_antideadzone = _clamp(d.trigger_antideadzone, 0.0, 0.60)
@@ -579,30 +600,35 @@ class AppConfig:
         d.axes = {name: (raw_axes.get(name) or "")
                   if raw_axes.get(name) in PAD_SOURCE_KEYS else ""
                   for name in PAD_DIRECTIONS}
+        raw_buttons = d.buttons if isinstance(d.buttons, dict) else {}
         fixed: Dict[str, int] = {}
         for key in PAD_BUTTON_NAMES:
-            try:
-                v = int(d.buttons.get(key, -1))
-            except (TypeError, ValueError):
-                v = -1
+            v = _as_int(raw_buttons.get(key, -1), -1)
             fixed[key] = v if 0 <= v < protocol.NUM_BUTTONS else -1
         d.buttons = fixed
 
-        self.link.baudrate = max(9600, min(2_000_000, int(self.link.baudrate)))
-        self.link.report_hz = max(50, min(500, int(self.link.report_hz)))
-        self.output.vjoy_device = max(1, min(16, int(self.output.vjoy_device)))
+        if not isinstance(self.link.port, str):
+            self.link.port = ""
+        self.link.baudrate = max(9600, min(2_000_000, _as_int(
+            self.link.baudrate, LinkConfig.baudrate)))
+        self.link.report_hz = max(50, min(500, _as_int(
+            self.link.report_hz, LinkConfig.report_hz)))
+        self.output.vjoy_device = max(1, min(16, _as_int(
+            self.output.vjoy_device, OutputConfig.vjoy_device)))
         if self.output.mode not in OUTPUT_MODES:
             self.output.mode = "g29"
         self.g29.pedals_inverted = bool(self.g29.pedals_inverted)
         raw_g29 = self.g29.buttons if isinstance(self.g29.buttons, dict) else {}
         fixed_g29: Dict[str, int] = {}
         for key in G29_CONTROLS:
-            try:
-                v = int(raw_g29.get(key, -1))
-            except (TypeError, ValueError):
-                v = -1
+            v = _as_int(raw_g29.get(key, -1), -1)
             fixed_g29[key] = v if 0 <= v < protocol.NUM_BUTTONS else -1
         self.g29.buttons = fixed_g29
+
+        u = self.ui
+        u.geometry = u.geometry if isinstance(u.geometry, str) else ""
+        u.zoomed = bool(u.zoomed)
+        u.tab = max(0, min(31, _as_int(u.tab, 0)))
 
     # -------------------------------------------------------- serializacja
 
@@ -633,16 +659,34 @@ class AppConfig:
 
     @classmethod
     def load(cls, path: Optional[Path] = None) -> "AppConfig":
+        """Wczytuje config.json. Brak pliku = ustawienia domyslne.
+
+        Pliku, ktorego nie da sie odczytac, nie wolno po cichu zastapic
+        domyslnymi - zamkniecie panelu zapisaloby je na jego miejsce i
+        ustawienia przepadlyby. Trafia wiec do kopii config.json.bad, a opis
+        problemu do last_load_problem (panel pokazuje go w dzienniku).
+        """
+        global last_load_problem
+        last_load_problem = ""
         path = path or config_path()
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            text = _read_text_retry(path)
+        except FileNotFoundError:
+            return cls()                    # pierwsze uruchomienie
+        except ValueError as exc:           # nie UTF-8 (UnicodeDecodeError)
+            last_load_problem = _keep_bad_copy(path, exc)
             return cls()
-        if not isinstance(raw, dict):
+        except OSError as exc:
+            last_load_problem = (f"Nie da się odczytać {path.name} ({exc}) - "
+                                 f"panel startuje z ustawieniami domyślnymi")
             return cls()
         try:
+            raw = json.loads(text)
+            if not isinstance(raw, dict):
+                raise ValueError("w pliku nie ma obiektu JSON")
             cfg = _from_dict(cls, raw)
-        except Exception:
+        except Exception as exc:
+            last_load_problem = _keep_bad_copy(path, exc)
             return cls()
         # Migracja z wersji sprzed trybu pada: pole output.backend
         out = raw.get("output")
@@ -661,6 +705,47 @@ class AppConfig:
             cfg.g29.buttons = g29_buttons_from_pad(cfg.pad.buttons)
         cfg.normalize()
         return cfg
+
+
+#: Co poszlo nie tak przy ostatnim AppConfig.load() ("" = wszystko w porzadku).
+last_load_problem = ""
+
+
+def _read_text_retry(path: Path) -> str:
+    """Tresc pliku; chwilowo zajety plik (Nextcloud, antywirus) - ponawiamy."""
+    for attempt in range(_SAVE_ATTEMPTS):
+        try:
+            return path.read_text(encoding="utf-8")
+        except PermissionError:
+            if attempt == _SAVE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.1)
+    raise OSError(f"nie udało się odczytać {path}")
+
+
+def _keep_bad_copy(path: Path, exc: Exception) -> str:
+    """Odklada nieczytelny plik obok i zwraca opis dla dziennika."""
+    bad = path.with_suffix(".json.bad")
+    try:
+        bad.write_bytes(path.read_bytes())
+        where = f"kopia: {bad.name}"
+    except OSError:
+        where = "kopii nie udało się zrobić"
+    return (f"{path.name} jest uszkodzony ({type(exc).__name__}: {exc}) - "
+            f"{where}, panel startuje z ustawieniami domyślnymi")
+
+
+def _as_int(v: Any, default: int) -> int:
+    """Liczba calkowita z pliku; smieci daja wartosc domyslna, a nie wyjatek,
+    ktory wywrocilby wczytywanie calej konfiguracji."""
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _as_list(v: Any) -> List[Any]:
+    return list(v) if isinstance(v, (list, tuple)) else []
 
 
 def _clamp(v: Any, lo: float, hi: float) -> float:
@@ -691,6 +776,7 @@ _NESTED: Dict[str, Dict[str, Any]] = {
         "buttons": ButtonsConfig,
         "pad": PadConfig,
         "g29": G29Config,
+        "ui": UiConfig,
     },
 }
 
@@ -702,13 +788,18 @@ def _from_dict(cls: Any, data: Dict[str, Any]) -> Any:
         if f.name not in data:
             continue
         value = data[f.name]
-        if f.name in nested and isinstance(value, dict):
-            kwargs[f.name] = _from_dict(nested[f.name], value)
-        elif f.name == "pedals" and isinstance(value, dict):
-            kwargs[f.name] = {
-                k: _from_dict(PedalConfig, v) if isinstance(v, dict) else PedalConfig()
-                for k, v in value.items()
-            }
+        if f.name in nested:
+            # Zepsuta sekcja (np. "steer": null) dostaje wartosci domyslne -
+            # przekazana dalej wywracala wczytywanie calego pliku.
+            if isinstance(value, dict):
+                kwargs[f.name] = _from_dict(nested[f.name], value)
+        elif f.name == "pedals":
+            if isinstance(value, dict):
+                kwargs[f.name] = {
+                    k: _from_dict(PedalConfig, v) if isinstance(v, dict)
+                    else PedalConfig()
+                    for k, v in value.items()
+                }
         else:
             kwargs[f.name] = value
     return cls(**kwargs)

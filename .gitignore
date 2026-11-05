@@ -1,11 +1,14 @@
 # Python
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .venv/
 venv/
 
 # Ustawienia uzytkownika - aplikacja tworzy je sama przy pierwszym starcie
+# (.tmp to zapis w toku, .bad - kopia pliku, ktorego nie dalo sie odczytac)
 panel/config.json
+panel/config.json.*
 
 # Stare wersje i proby - tylko lokalnie
 _archiwum/
