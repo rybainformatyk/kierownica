@@ -1,7 +1,14 @@
 /* =============================================================================
  *  KIEROWNICA  -  firmware dla Arduino Due
- *  Wersja 2.1  -  lacze szeregowe z aplikacja + kierownica G29 na Native USB
+ *  Wersja 2.2  -  lacze szeregowe z aplikacja + kierownica G29 na Native USB
  * =============================================================================
+ *
+ *  NOWE W 2.2 - G29 ZNIKA, GDY NIE JEST UZYWANA
+ *    Komenda CMD_G29_USB odlacza port Native USB od komputera (i podlacza go
+ *    z powrotem). Aplikacja odlacza G29 w trybach bez G29 (vJoy, pad), zeby
+ *    gry nie widzialy dwoch kierownic naraz. Po starcie plytki G29 jest
+ *    podlaczona, jak w 2.1. Przy laczu przez Native USB (WHEEL_USE_NATIVE_USB)
+ *    komenda jest wylaczona - odlaczenie zerwaloby lacze z aplikacja.
  *
  *  NOWE W 2.1 - KIEROWNICA G29
  *    Port Native USB przedstawia sie Windowsowi jako Logitech G29 (VID 046D,
@@ -94,7 +101,7 @@
 
 #define PROTO_VERSION  1
 #define FW_MAJOR       2
-#define FW_MINOR       1
+#define FW_MINOR       2
 #define DEVICE_NAME    "KIEROWNICA-DUE"
 
 #define SYNC1 0xAA
@@ -118,10 +125,12 @@
 #define CMD_FFB_CONFIG  0x16
 #define CMD_RESET       0x17
 #define CMD_G29         0x18     // gotowy 12-bajtowy raport G29 z aplikacji
+#define CMD_G29_USB     0x19     // 1 = podlacz Native USB (G29), 0 = odlacz
 
 #define CAP_FFB        0x01
 #define CAP_NATIVE_USB 0x02
 #define CAP_G29        0x04
+#define CAP_G29_HIDE   0x08     // umie odlaczyc G29 komenda CMD_G29_USB
 
 #define NUM_AXES    6
 #define NUM_BUTTONS 32
@@ -137,6 +146,10 @@
   static G29Usb g29Usb;
   static uint32_t g29LastCmdMs = 0;
   static bool     g29Fed       = false;   // aplikacja przysyla raporty
+  // Odlaczanie G29 tylko wtedy, gdy lacze z aplikacja idzie Programming Portem
+  #define G29_CAN_HIDE (!WHEEL_USE_NATIVE_USB)
+#else
+  #define G29_CAN_HIDE 0
 #endif
 
 // ---------------------------------------------------------------------- CRC8
@@ -405,6 +418,9 @@ static void sendHello() {
 #if WHEEL_G29_USB
   caps |= CAP_G29;
 #endif
+#if G29_CAN_HIDE
+  caps |= CAP_G29_HIDE;
+#endif
   putU8 (txBuf, i, PROTO_VERSION);
   putU8 (txBuf, i, FW_MAJOR);
   putU8 (txBuf, i, FW_MINOR);
@@ -429,6 +445,7 @@ static void sendState(int32_t pos, uint32_t nowMs) {
 #if WHEEL_G29_USB
   if (g29Usb.hostConfigured()) flags |= 0x20;   // Windows wyliczyl G29
   if (g29Fed)                  flags |= 0x40;   // raporty z aplikacji docieraja
+  if (g29Usb.attached())       flags |= 0x80;   // G29 podlaczona do komputera
 #endif
 
   putU16(txBuf, i, stateSeq);
@@ -532,6 +549,13 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint8_t len) {
         sendAck(type, 0);
       }
       break;                      // bez ACK - idzie z kazda ramka
+#endif
+#if G29_CAN_HIDE
+    case CMD_G29_USB:
+      if (len < 1) { sendAck(type, 0); return; }
+      g29Usb.setAttached(p[0] != 0);
+      sendAck(type, 1);
+      break;
 #endif
 
     case CMD_RESET:

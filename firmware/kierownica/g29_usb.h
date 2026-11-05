@@ -29,6 +29,10 @@
  *  bajtach 4-5, pedaly w 6-8) i z zapisem sterownika Logitecha (17-bajtowy
  *  zapis = numer raportu + 16 B wyjscia).
  *
+ *  setAttached(false) odlacza caly port Native USB od komputera - Windows
+ *  widzi to jak wyjecie kabla, wiec gry przestaja widziec G29. Aplikacja
+ *  robi tak w trybach bez G29, zeby gry nie dostawaly dwoch kierownic.
+ *
  *  Kazda funkcja wolana z petli jest NIEBLOKUJACA. USBD_Send() z rdzenia Due
  *  czeka w nieskonczonosc, az host odbierze poprzedni pakiet - przy uspionym
  *  komputerze zawiesilaby petle razem z watchdogiem silnika FFB. Dlatego
@@ -107,11 +111,24 @@ public:
 
   // Czy Windows wyliczyl port Native USB (kabel podlaczony, sterownik
   // zaladowany). Trafia do flag ramki STATE.
-  bool hostConfigured() const { return USBDevice.configured(); }
+  bool hostConfigured() const { return usbOn && USBDevice.configured(); }
+
+  // Podlacza / odlacza port Native USB. Po odlaczeniu rdzen nie dostaje
+  // juz resetu od hosta, wiec configured() zostaje na starej wartosci -
+  // stad wlasna flaga usbOn.
+  void setAttached(bool on) {
+    if (on == usbOn) return;
+    usbOn = on;
+    wasConfigured = false;
+    if (on) USBDevice.attach();
+    else    USBDevice.detach();
+  }
+
+  bool attached() const { return usbOn; }
 
   // Wolane w kazdym obiegu petli. Nigdy nie czeka na hosta.
   void poll() {
-    if (!USBDevice.configured()) {
+    if (!usbOn || !USBDevice.configured()) {
       wasConfigured = false;
       return;
     }
@@ -271,6 +288,7 @@ private:
   uint8_t  report[G29_REPORT_SIZE];
   volatile bool dirty = true;
   bool     wasConfigured = false;
+  bool     usbOn = true;              // port podlaczony do komputera
   uint8_t  idle = 0;
   uint8_t  protocol = 1;
 

@@ -61,6 +61,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "Gotowe. Firmware 2.1 wgrany." -ForegroundColor Green
+Write-Host "Gotowe. Firmware 2.2 wgrany." -ForegroundColor Green
 Write-Host "Teraz podlacz drugi kabel do portu Native USB - Windows wykryje 'G29 Driving Force Racing Wheel'."
 Write-Host "W panelu wybierz tryb wyjscia: Kierownica G29."
