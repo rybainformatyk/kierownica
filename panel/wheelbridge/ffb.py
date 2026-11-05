@@ -269,6 +269,10 @@ class FfbManager:
     def register(self, api, device_id: int) -> bool:
         """Podlacza callback vJoy. Zwraca False gdy DLL nie ma API FFB."""
         if self._registered:
+            # Callback jest jeden na caly proces. Po zmianie numeru
+            # urzadzenia vJoy wystarczy przepuszczac pakiety nowego numeru -
+            # inaczej FFB milklo do restartu panelu.
+            self._device_id = int(device_id)
             return True
         if api is None or not getattr(api, "has_ffb_api", False):
             self._log("warn", "Ta wersja vJoyInterface.dll nie udostępnia API FFB")

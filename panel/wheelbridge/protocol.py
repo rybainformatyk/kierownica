@@ -18,6 +18,11 @@ from typing import List, Tuple
 
 PROTO_VERSION = 1
 
+#: Najnowszy firmware z firmware/kierownica. Starszy dziala dalej, ale bez
+#: nowszych funkcji - panel podpowiada wtedy, zeby go wgrac.
+FW_LATEST = (2, 2)
+FW_LATEST_TEXT = "{}.{}".format(*FW_LATEST)
+
 SYNC1 = 0xAA
 SYNC2 = 0x55
 MAX_PAYLOAD = 64
@@ -40,6 +45,7 @@ CMD_FFB = 0x15
 CMD_FFB_CONFIG = 0x16
 CMD_RESET = 0x17
 CMD_G29 = 0x18          # gotowy 12-bajtowy raport G29 dla portu Native USB
+CMD_G29_USB = 0x19      # 1 = podlacz G29 (Native USB) do komputera, 0 = odlacz
 
 MSG_NAMES = {
     MSG_HELLO: "HELLO",
@@ -57,11 +63,13 @@ MSG_NAMES = {
     CMD_FFB_CONFIG: "FFB_CONFIG",
     CMD_RESET: "RESET",
     CMD_G29: "G29",
+    CMD_G29_USB: "G29_USB",
 }
 
 CAP_FFB = 0x01
 CAP_NATIVE_USB = 0x02
 CAP_G29 = 0x04          # firmware 2.1+: Native USB udaje kierownice G29
+CAP_G29_HIDE = 0x08     # firmware 2.2+: umie odlaczyc G29 (CMD_G29_USB)
 
 # Flagi w ramce STATE
 FLAG_FFB_ENABLED = 0x01
@@ -71,6 +79,7 @@ FLAG_ENDSTOP_HIT = 0x08
 FLAG_FFB_WATCHDOG = 0x10
 FLAG_G29_USB = 0x20     # Windows wyliczyl port Native USB jako G29
 FLAG_G29_FED = 0x40     # raporty G29 z aplikacji docieraja do plytki
+FLAG_G29_ATTACHED = 0x80  # G29 podlaczona do komputera (firmware 2.2+)
 
 #: Dlugosc raportu wejsciowego G29 (bez numeru raportu) - patrz g29_usb.h.
 G29_REPORT_SIZE = 12
@@ -216,6 +225,10 @@ class StateFrame:
     def g29_fed(self) -> bool:
         return bool(self.flags & FLAG_G29_FED)
 
+    @property
+    def g29_attached(self) -> bool:
+        return bool(self.flags & FLAG_G29_ATTACHED)
+
 
 @dataclass(frozen=True)
 class HelloInfo:
@@ -244,6 +257,15 @@ class HelloInfo:
     @property
     def has_g29(self) -> bool:
         return bool(self.caps & CAP_G29)
+
+    @property
+    def can_hide_g29(self) -> bool:
+        return bool(self.caps & CAP_G29_HIDE)
+
+    @property
+    def outdated(self) -> bool:
+        """Czy plytka ma starszy firmware niz ten z repozytorium."""
+        return (self.fw_major, self.fw_minor) < FW_LATEST
 
 
 def decode_state(payload: bytes, host_time: float = 0.0) -> StateFrame:
@@ -315,6 +337,11 @@ def cmd_g29(report: bytes) -> bytes:
         raise ValueError(f"raport G29 ma {len(report)} B, musi mieć "
                          f"{G29_REPORT_SIZE} B")
     return build_frame(CMD_G29, bytes(report))
+
+
+def cmd_g29_usb(attached: bool) -> bytes:
+    """Podlacza albo odlacza G29 od komputera - gry przestaja ja widziec."""
+    return build_frame(CMD_G29_USB, bytes((1 if attached else 0,)))
 
 
 def cmd_ffb(torque: int) -> bytes:

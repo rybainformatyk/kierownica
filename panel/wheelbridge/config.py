@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import protocol
+from .ffb import DIRECTION_MODES
 
 APP_NAME = "KierownicaPanel"
 
@@ -42,6 +44,9 @@ DEFAULT_VJOY_AXIS = {
 }
 
 VJOY_AXIS_CHOICES = ("X", "Y", "Z", "RX", "RY", "RZ", "SL0", "SL1", "WHL", "-")
+
+#: Ile razy probujemy podmienic config.json, gdy plik jest chwilowo zajety.
+_SAVE_ATTEMPTS = 10
 
 
 def config_path() -> Path:
@@ -111,6 +116,8 @@ class FfbConfig:
     game_spring_gain: float = 1.0
     game_damper_gain: float = 1.0
     game_periodic_gain: float = 1.0
+    #: Jak czytac kierunek efektow z gry - patrz ffb.DIRECTION_MODES.
+    direction_mode: str = "auto"
 
 
 @dataclass
@@ -345,10 +352,13 @@ class LinkConfig:
 #: tam, gdzie gra przyjmuje tylko kierownice ze swojej listy (Forza).
 #: "wheel" to kierownica DirectInput na vJoy (Force Feedback z gry), "pad"
 #: to wirtualny Xbox 360 na ViGEm (gry czytajace tylko XInput), "both"
-#: wystawia vJoy i pada naraz.
-OUTPUT_MODES = ("g29", "wheel", "pad", "both", "none")
+#: wystawia vJoy i pada naraz. "g29_vjoy" to G29 do jazdy plus vJoy z samymi
+#: przyciskami (osie stoja na srodku) - przyciski ponad to, co ma G29, np.
+#: jako button box w symulatorze.
+OUTPUT_MODES = ("g29", "g29_vjoy", "wheel", "pad", "both", "none")
 OUTPUT_MODE_LABELS = {
     "g29": "Kierownica G29 (Native USB) - każda gra",
+    "g29_vjoy": "G29 + vJoy - jazda na G29, przyciski z vJoy",
     "wheel": "Kierownica (vJoy) - symulatory, Force Feedback",
     "pad": "Pad Xbox 360 (ViGEm) - gry XInput, np. NFS",
     "both": "Oba naraz - kierownica i pad",
@@ -427,10 +437,20 @@ class OutputConfig:
     mode: str = "g29"               # patrz OUTPUT_MODES
     vjoy_device: int = 1            # 1..16
     auto_acquire: bool = True
+    #: Gry widza tylko urzadzenie z wybranego trybu: w trybie G29 vJoy jest
+    #: wylaczany, w trybie vJoy G29 odlaczana od USB. Wylaczenie vJoy wymaga
+    #: uprawnien administratora - Windows zapyta raz przy zmianie trybu.
+    hide_unused: bool = True
 
     @property
     def wheel_on(self) -> bool:
-        return self.mode in ("wheel", "both")
+        """Czy otwieramy vJoy - z osiami albo z samymi przyciskami."""
+        return self.mode in ("wheel", "both", "g29_vjoy")
+
+    @property
+    def vjoy_buttons_only(self) -> bool:
+        """vJoy dostaje tylko przyciski i krzyzak - kierownica i pedaly ida do G29."""
+        return self.mode == "g29_vjoy"
 
     @property
     def pad_on(self) -> bool:
@@ -438,7 +458,25 @@ class OutputConfig:
 
     @property
     def g29_on(self) -> bool:
-        return self.mode == "g29"
+        return self.mode in ("g29", "g29_vjoy")
+
+    @property
+    def vjoy_wanted(self) -> Optional[bool]:
+        """Czy vJoy ma byc widoczne dla gier. None = nie ruszamy.
+
+        W podgladzie nie ruszamy - przelaczenie na chwile na kalibracje nie
+        powinno konczyc sie pytaniem o uprawnienia administratora.
+        """
+        if self.wheel_on:
+            return True
+        if not self.hide_unused or self.mode == "none":
+            return None
+        return False
+
+    @property
+    def g29_wanted(self) -> bool:
+        """Czy plytka ma wystawiac G29 na Native USB."""
+        return self.g29_on or not self.hide_unused
 
 
 @dataclass
@@ -515,6 +553,8 @@ class AppConfig:
         for name in ("game_constant_gain", "game_spring_gain",
                      "game_damper_gain", "game_periodic_gain"):
             setattr(f, name, _clamp(getattr(f, name), 0.0, 2.0))
+        if f.direction_mode not in DIRECTION_MODES:
+            f.direction_mode = "auto"
 
         b = self.buttons
         mapping = [int(x) for x in (b.mapping or [])][:protocol.NUM_BUTTONS]
@@ -574,7 +614,21 @@ class AppConfig:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
                        encoding="utf-8")
-        tmp.replace(path)       # atomowy zapis - brak uszkodzonego pliku
+        # Atomowy zapis - brak uszkodzonego pliku. Na Windowsie podmiana nie
+        # udaje sie, gdy ktos akurat czyta stary plik (klient Nextcloud,
+        # antywirus) - chwile czekamy i probujemy znowu.
+        for attempt in range(_SAVE_ATTEMPTS):
+            try:
+                tmp.replace(path)
+                return path
+            except PermissionError:
+                if attempt == _SAVE_ATTEMPTS - 1:
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+                    raise
+                time.sleep(0.1)
         return path
 
     @classmethod

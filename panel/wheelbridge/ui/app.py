@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import gc
+import json
 import queue
+import subprocess
 import sys
 import time
 import tkinter as tk
+import traceback
 import webbrowser
+from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+from .. import __version__ as APP_VERSION
 from .. import link as link_mod
 from .. import protocol
 from ..config import (AppConfig, G29_CONTROL_LABELS, G29_CONTROLS,
@@ -41,8 +46,10 @@ from .widgets import (OFFLINE_LIVE, BarMeter, ButtonGrid, Card, CurvePlot,
                       round_corners)
 
 APP_TITLE = "Panel kierownicy"
-APP_VERSION = "2.4"
 VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
+#: Skrypt wgrywania firmware z tego repozytorium (panel/../firmware).
+FIRMWARE_SCRIPT = (Path(__file__).resolve().parents[3] / "firmware"
+                   / "kierownica" / "wgraj_firmware.bat")
 
 RANGE_PRESETS = (120, 270, 360, 540, 720, 900, 1080)
 
@@ -51,6 +58,8 @@ PEDAL_COLORS = {"throttle": theme.GOOD, "brake": theme.BAD,
                 "clutch": theme.WARN, "aux1": theme.ACCENT,
                 "aux2": theme.ACCENT, "aux3": theme.ACCENT}
 SAVE_HINT = "Ctrl+S"
+DIRTY_HINT = "● Niezapisane zmiany · Ctrl+S"
+SAVED_FLASH_S = 4.0          # tyle widac "Zapisano" po kliknieciu
 
 #: Nazwy zakladek - w tej samej kolejnosci co stale TAB_* ponizej.
 TAB_NAMES = ("Pulpit", "Kierownica", "Pedały", "Przyciski", "G29", "Pad",
@@ -62,6 +71,8 @@ TAB_ICONS = ("\uEC4A", "\uE713", "\uE9E9", "\uE8A9", "\uE804", "\uE7FC",
 UI_FPS = 60                  # klatek na sekunde podgladu
 UI_PERIOD_S = 1.0 / UI_FPS
 UI_IDLE_PERIOD_S = 0.2       # okno zminimalizowane - podgladu i tak nie widac
+TICK_ERROR_REPEAT_S = 5.0    # ten sam blad odswiezania w dzienniku najwyzej tak czesto
+G29_DETECT_S = 5.0           # tyle Windows ma na wyliczenie ponownie podlaczonej G29
 
 
 def _hires_timer(on: bool) -> None:
@@ -88,6 +99,9 @@ GAME_COMPAT = (
     ("Forza, NFS Unbound, F1, ETS2 - każda gra z kierownicą", "kierownica G29",
      "Płytka sama przedstawia się jako Logitech G29 (046D:C24F), więc gry z "
      "listą obsługiwanych kierownic rozpoznają ją bez żadnej konfiguracji."),
+    ("Gdy 25 przycisków G29 nie wystarcza (button box)", "G29 + vJoy",
+     "Jazda idzie przez G29, a dodatkowe przyciski przez vJoy (lista w "
+     "zakładce Przyciski). W grze przypisz je z urządzenia vJoy."),
     ("Gry bez obsługi kierownic (porty z konsol)", "tryb pada",
      "Czytają wyłącznie XInput, czyli pada. Kierownicy nie zobaczą w żadnym "
      "trybie."),
@@ -113,6 +127,7 @@ class PanelApp:
 
     def __init__(self) -> None:
         self.cfg = AppConfig.load()
+        self._saved_snapshot = self._config_snapshot()
         self._log_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=2000)
         self.engine = WheelEngine(self.cfg, on_log=self._enqueue_log)
 
@@ -138,6 +153,13 @@ class PanelApp:
         self._closing = False
         self._next_frame = 0.0
         self._spark_t = 0.0
+        self._tick_error = ""
+        self._tick_error_t = 0.0
+        self._vjoy_was_switching = False
+        self._copied_token = 0
+        #: Okno wgrywania firmware (wgraj_firmware.bat), gdy trwa
+        self._flash_proc: Optional[subprocess.Popen] = None
+        self._flash_reconnect = False
 
         _hires_timer(True)
         # Watek lacza oddaje GIL co 5 ms (domyslnie) - interfejs czekal
@@ -174,6 +196,24 @@ class PanelApp:
         x = max(0, (screen_w - w) // 2)
         y = max(0, (screen_h - h) // 3)
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _window_handle(self) -> int:
+        """Uchwyt okna glownego (HWND) - okno UAC ma wyskoczyc nad nim.
+
+        Prawdziwe okno z paskiem tytulu Tk tworzy dopiero przy pierwszym
+        pokazaniu - wczesniej wm_frame() zwraca wewnetrzna ramke. Dlatego
+        wolane z pierwszej klatki, a nie przed petla Tk (wymuszone pokazanie
+        okna przed startem silnika zostawialo je zamrozone, gdy pad czekal
+        na Windowsa).
+        """
+        if sys.platform != "win32":
+            return 0
+        try:
+            frame = int(self.root.wm_frame(), 16)
+            # jeszcze wewnetrzna ramka - sprobujemy w nastepnej klatce
+            return 0 if frame == self.root.winfo_id() else frame
+        except (tk.TclError, ValueError):
+            return 0
 
     def _set_icon(self) -> None:
         # Prosta ikona rysowana w locie - brak zewnetrznych plikow.
@@ -443,14 +483,26 @@ class PanelApp:
 
         out_card = Card(right, "Wyjście do gier", self.fonts)
         out_card.grid_card(row=2, column=0, sticky="ew", pady=(10, 0))
+        # Tryb zmienia sie przy kazdej zmianie gry, wiec wybor stoi tez na
+        # Pulpicie - nie trzeba szukac go w zakladkach Pad i Diagnostyka.
+        self.var_mode_dash = tk.StringVar(
+            value=OUTPUT_MODE_LABELS[self.cfg.output.mode])
+        mode_box = ttk.Combobox(out_card.right_slot,
+                                textvariable=self.var_mode_dash,
+                                state="readonly", width=44,
+                                values=[OUTPUT_MODE_LABELS[m]
+                                        for m in OUTPUT_MODES])
+        mode_box.pack(side="right")
+        mode_box.bind("<<ComboboxSelected>>", lambda _e: self._on_mode_change(
+            self.var_mode_dash))
         self.lbl_output = fit_wrap(ttk.Label(
             out_card.body, text="-", style="Dim.TLabel", wraplength=560,
             justify="left"))
         self.lbl_output.pack(anchor="w")
+        # pokazywana dopiero z trescia - pusta zostawiala dziure w karcie
         self.lbl_output_hint = fit_wrap(ttk.Label(
             out_card.body, text="", style="Warn.TLabel", wraplength=560,
             justify="left"))
-        self.lbl_output_hint.pack(anchor="w", pady=(6, 0))
 
         torq = ttk.Frame(out_card.body, style="Card.TFrame")
         torq.pack(fill="x", pady=(8, 0))
@@ -631,20 +683,22 @@ class PanelApp:
         w["seen"] = StatRow(card.body, self.fonts, "Zaobserwowano")
         w["seen"].pack(fill="x", pady=(0, 6))
 
+        # Zakresy suwakow takie same jak w AppConfig.normalize() - szerszy
+        # suwak pokazywal np. 60 %, a pedal pracowal z obcietymi 45 %.
         w["dz_lo"] = LabeledSlider(
-            card.body, self.fonts, "Martwa strefa - początek", 0.0, 0.80,
+            card.body, self.fonts, "Martwa strefa - początek", 0.0, 0.45,
             cfg.deadzone_low, fmt="{:.0%}", resolution=0.01, width=260,
             command=lambda v, k=key: self._on_pedal_field(k, "deadzone_low", v))
         w["dz_lo"].pack(fill="x", pady=2)
 
         w["dz_hi"] = LabeledSlider(
-            card.body, self.fonts, "Martwa strefa - koniec", 0.0, 0.80,
+            card.body, self.fonts, "Martwa strefa - koniec", 0.0, 0.45,
             cfg.deadzone_high, fmt="{:.0%}", resolution=0.01, width=260,
             command=lambda v, k=key: self._on_pedal_field(k, "deadzone_high", v))
         w["dz_hi"].pack(fill="x", pady=2)
 
         w["gamma"] = LabeledSlider(
-            card.body, self.fonts, "Krzywa (gamma)", 0.4, 4, cfg.gamma,
+            card.body, self.fonts, "Krzywa (gamma)", 0.3, 3.0, cfg.gamma,
             fmt="{:.2f}", resolution=0.05, width=260,
             command=lambda v, k=key: self._on_pedal_field(k, "gamma", v))
         w["gamma"].pack(fill="x", pady=2)
@@ -1047,7 +1101,7 @@ class PanelApp:
         dirrow.pack(fill="x", pady=(4, 0))
         ttk.Label(dirrow, text="Interpretacja kierunku", style="Dim.TLabel").pack(anchor="w")
         self.var_dir_mode = tk.StringVar(
-            value=DIRECTION_LABELS.get(self.engine.ffb.direction_mode,
+            value=DIRECTION_LABELS.get(self.cfg.ffb.direction_mode,
                                        DIRECTION_LABELS["auto"]))
         cb = ttk.Combobox(dirrow, textvariable=self.var_dir_mode, state="readonly",
                           values=[DIRECTION_LABELS[m] for m in DIRECTION_MODES],
@@ -1127,6 +1181,21 @@ class PanelApp:
             10, width=250, command=self._on_report_hz)
         self.sl_report.pack(fill="x")
 
+        # wgrywanie firmware bez zamykania panelu - port zwalnia sam panel
+        fw_row = ttk.Frame(c1.body, style="Card.TFrame")
+        fw_row.pack(fill="x", pady=(14, 0))
+        self.btn_flash = ttk.Button(
+            fw_row, text=f"Wgraj firmware {protocol.FW_LATEST_TEXT}",
+            style="Small.TButton", command=self._flash_firmware)
+        self.btn_flash.pack(side="left")
+        if not FIRMWARE_SCRIPT.is_file():
+            self.btn_flash.state(["disabled"])
+        fit_wrap(ttk.Label(
+            c1.body, style="Muted.TLabel", wraplength=250, justify="left",
+            text="Zwalnia port, otwiera okno wgrywania (wgraj_firmware.bat) "
+                 "i łączy się ponownie, gdy je zamkniesz."),
+            cap=260).pack(anchor="w", pady=(4, 0))
+
         # --- prawa kolumna: G29 nad vJoy ---
         rightcol = ttk.Frame(parent, style="Root.TFrame")
         rightcol.grid(row=0, column=1, sticky="new")
@@ -1160,6 +1229,12 @@ class PanelApp:
                                 values=[OUTPUT_MODE_LABELS[m] for m in OUTPUT_MODES])
         mode_box.pack(anchor="w", pady=(3, 0))
         mode_box.bind("<<ComboboxSelected>>", lambda _e: self._on_backend())
+        self.var_hide_unused = tk.BooleanVar(value=self.cfg.output.hide_unused)
+        ttk.Checkbutton(br, text="Ukrywaj przed grami urządzenie, którego "
+                                 "tryb nie używa (G29 albo vJoy)",
+                        variable=self.var_hide_unused,
+                        command=self._on_hide_unused).pack(anchor="w",
+                                                           pady=(6, 0))
 
         self.txt_vjoy = tk.Text(c2.body, height=9, bg=theme.PANEL_HI,
                                 fg=theme.TEXT_DIM, font=self.fonts.mono_small,
@@ -1172,7 +1247,8 @@ class PanelApp:
         hint.pack(fill="x", pady=(8, 0))
         ttk.Button(hint, text="Pobierz vJoy", style="Small.TButton",
                    command=lambda: webbrowser.open(VJOY_URL)).pack(side="left")
-        ttk.Label(hint, text="Potrzebne, żeby gry widziały kierownicę",
+        ttk.Label(hint, text="Potrzebne tylko w trybach z vJoy - tryb G29 "
+                             "działa bez niego",
                   style="Muted.TLabel").pack(side="left", padx=8)
 
         # --- co ktora gra potrafi zobaczyc ---
@@ -1225,6 +1301,10 @@ class PanelApp:
         tools.pack(fill="x", pady=(8, 0))
         ttk.Button(tools, text="Wyczyść", style="Small.TButton",
                    command=self._clear_log).pack(side="left")
+        ttk.Button(tools, text="Kopiuj do schowka", style="Small.TButton",
+                   command=self._copy_log).pack(side="left", padx=(6, 0))
+        self.lbl_log_copied = ttk.Label(tools, text="", style="Good.TLabel")
+        self.lbl_log_copied.pack(side="left", padx=(10, 0))
 
     def _build_g29_card(self, parent: ttk.Frame) -> None:
         card = Card(parent, "Kierownica G29 (Native USB)", self.fonts)
@@ -1265,14 +1345,18 @@ class PanelApp:
                 r.set("-", theme.MUTED)
             self.lbl_g29_report.configure(text="raport: -")
             return
-        rows["fw"].set("tak" if st.g29_fw else "nie - wgraj firmware 2.1",
+        rows["fw"].set("tak" if st.g29_fw
+                       else f"nie - wgraj firmware {protocol.FW_LATEST_TEXT}",
                        theme.GOOD if st.g29_fw else theme.BAD)
-        if not st.g29_fw:
-            rows["usb"].set("-", theme.MUTED)
-        else:
-            rows["usb"].set("tak" if st.g29_usb
-                            else "nie - podłącz kabel do Native USB",
-                            theme.GOOD if st.g29_usb else theme.BAD)
+        rows["usb"].set(*{
+            "offline": ("-", theme.MUTED),
+            "old_fw": ("-", theme.MUTED),
+            "hidden": ("nie - ukryta, tryb bez G29", theme.MUTED),
+            "attaching": ("podłączanie…", theme.WARN),
+            "detecting": ("Windows ją wykrywa…", theme.WARN),
+            "no_usb": ("nie - podłącz kabel do Native USB", theme.BAD),
+            "ok": ("tak", theme.GOOD),
+        }[self._g29_state(connected)])
         if not self.cfg.output.g29_on:
             rows["feed"].set("wyłączone - inny tryb wyjścia", theme.MUTED)
         elif st.g29_fed:
@@ -1287,6 +1371,28 @@ class PanelApp:
         self.lbl_g29_report.configure(
             text=("raport: " + rep.hex(" ")) if rep else "raport: -")
 
+    def _g29_state(self, connected: bool) -> str:
+        """Co z G29 widzi Windows - jeden opis dla naglowka, kart i podpowiedzi.
+
+        offline, old_fw (firmware bez G29), hidden (odlaczona, tryb bez G29),
+        attaching (panel ja podlacza), detecting (podlaczona, Windows jeszcze
+        jej nie wyliczyl), no_usb (brak kabla Native USB), ok.
+        """
+        st = self.engine.status
+        if not connected:
+            return "offline"
+        if not st.g29_fw:
+            return "old_fw"
+        if not st.g29_attached:
+            return "attaching" if self.cfg.output.g29_wanted else "hidden"
+        if not st.g29_usb:
+            # Po ponownym podlaczeniu Windows wylicza G29 1-2 s - bez tego
+            # przez chwile wisialo "podlacz kabel", choc kabel jest
+            if time.monotonic() - st.g29_attached_since < G29_DETECT_S:
+                return "detecting"
+            return "no_usb"
+        return "ok"
+
     def _on_g29_invert(self) -> None:
         self.cfg.g29.pedals_inverted = bool(self.var_g29_inv.get())
 
@@ -1300,11 +1406,13 @@ class PanelApp:
         # konfiguracji pack sciskal ostatni element - i znikal "Zapisz".
         ttk.Button(bar, text="Zapisz ustawienia", style="Accent.TButton",
                    command=self._save_config).pack(side="right")
-        # skrot klawiszowy, a po zapisie - potwierdzenie na kilka sekund
+        # skrot klawiszowy albo "niezapisane zmiany", a po zapisie -
+        # potwierdzenie na kilka sekund
         self.lbl_saved = tk.Label(bar, text=SAVE_HINT, bg=theme.BG,
                                   fg=theme.MUTED, font=self.fonts.small)
         self.lbl_saved.pack(side="right", padx=(0, 12))
-        self._saved_token = 0
+        self._saved_flash_until = 0.0
+        self._dirty_check_t = 0.0
         self.lbl_status = tk.Label(bar, text="", bg=theme.BG, fg=theme.MUTED,
                                    font=self.fonts.small, anchor="w")
         self.lbl_status.pack(side="left", fill="x", expand=True)
@@ -1332,6 +1440,11 @@ class PanelApp:
         return self._port_labels.get(self.port_var.get(), "")
 
     def _toggle_connect(self) -> None:
+        if self._flash_proc is not None:
+            # skrypt wgrywania potrzebuje portu - panel nie moze go zajac
+            self._log("warn", "Trwa wgrywanie firmware - panel połączy się "
+                              "sam po zamknięciu okna wgrywania")
+            return
         if self.engine.link.state in (link_mod.CONNECTED, link_mod.SCANNING):
             self.engine.disconnect()
             self._log("info", "Rozłączono ręcznie")
@@ -1339,11 +1452,73 @@ class PanelApp:
             self.cfg.link.port = self._selected_port()
             self.engine.connect(self.cfg.link.port or None)
 
+    def _flash_firmware(self) -> None:
+        """Wgrywa firmware z repozytorium bez zamykania panelu.
+
+        Port COM moze miec otwarty tylko jeden program, wiec panel sie
+        rozlacza, uruchamia wgraj_firmware.bat w osobnym oknie, a gdy to
+        okno sie zamknie - laczy sie ponownie.
+        """
+        if self._flash_proc is not None:
+            return
+        script = FIRMWARE_SCRIPT
+        if not script.is_file():
+            messagebox.showwarning("Wgraj firmware",
+                                   f"Nie znaleziono skryptu:\n{script}",
+                                   parent=self.root)
+            return
+        if not messagebox.askyesno(
+                "Wgraj firmware",
+                f"Wgrać firmware {protocol.FW_LATEST_TEXT} z katalogu "
+                "firmware/kierownica?\n\nPanel rozłączy się z płytką na czas "
+                "wgrywania (gra straci kierownicę) i połączy się ponownie, "
+                "gdy zamkniesz okno wgrywania.", parent=self.root):
+            return
+        link = self.engine.link
+        # Port z dzialajacego polaczenia - skrypt sam szuka tylko oryginalnego
+        # Due (VID 2341/2A03), a klon z innym ukladem USB by przeoczyl.
+        port = link.stats.port if link.is_connected else self.cfg.link.port
+        self._flash_reconnect = link.state in (link_mod.CONNECTED,
+                                               link_mod.SCANNING)
+        self.engine.disconnect()
+        try:
+            self._flash_proc = subprocess.Popen(
+                ["cmd.exe", "/c", str(script)] + ([port] if port else []),
+                cwd=str(script.parent),
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        except OSError as exc:
+            self._flash_proc = None
+            messagebox.showerror("Wgraj firmware", str(exc), parent=self.root)
+            if self._flash_reconnect:
+                self.engine.connect(self.cfg.link.port or None)
+            return
+        self.btn_flash.state(["disabled"])
+        where = f"przez {port}" if port else "(skrypt sam znajdzie port)"
+        self._log("info", f"Wgrywanie firmware {where} - panel połączy się "
+                          "po zamknięciu okna wgrywania")
+
+    def _poll_flash(self) -> None:
+        """Okno wgrywania zamkniete - wracamy do plytki."""
+        proc = self._flash_proc
+        if proc is None or proc.poll() is None:
+            return
+        self._flash_proc = None
+        self.btn_flash.state(["!disabled"])
+        self._log("info", "Okno wgrywania zamknięte")
+        if self._flash_reconnect:
+            self.engine.connect(self.cfg.link.port or None)
+
     def _center_wheel(self) -> None:
+        # Zakres impulsow do wykrywania liczy od nowa sam silnik. Zakresy
+        # pedalow zebrane w kreatorze kalibracji zostaja.
         self.engine.center_wheel()
-        self.engine.reset_raw_tracking()
 
     def _reset_board(self) -> None:
+        if not self.engine.link.is_connected:
+            # bez lacza reset nigdzie nie pojdzie - nie wylaczamy tez FFB
+            messagebox.showinfo("Reset płytki", "Brak połączenia z płytką.",
+                                parent=self.root)
+            return
         if messagebox.askyesno("Reset płytki",
                                "Wysłać reset do Arduino?\n\n"
                                "Force Feedback zostanie wyłączony, a środek "
@@ -1537,6 +1712,10 @@ class PanelApp:
     def _on_ffb_field(self, name: str, value) -> None:
         setattr(self.cfg.ffb, name, value)
         self.cfg.normalize()
+        if name in ("min_duty", "max_duty"):
+            # PWM maksymalne musi byc wieksze od minimalnego - normalize()
+            # podnosi je wtedy, a suwak ma pokazac to samo
+            self.sl_maxduty.set(self.cfg.ffb.max_duty)
 
     def _on_ffb_invert(self) -> None:
         self.cfg.ffb.invert = bool(self.var_ffb_inv.get())
@@ -1545,6 +1724,8 @@ class PanelApp:
         label = self.var_dir_mode.get()
         for mode, text in DIRECTION_LABELS.items():
             if text == label:
+                # w konfiguracji - wczesniej wybor przepadal przy restarcie
+                self.cfg.ffb.direction_mode = mode
                 self.engine.ffb.direction_mode = mode
                 self._log("info", f"Tryb kierunku FFB: {text}")
                 return
@@ -1563,7 +1744,8 @@ class PanelApp:
 
     def _sync_mode_widgets(self) -> None:
         label = OUTPUT_MODE_LABELS[self.cfg.output.mode]
-        for var in (getattr(self, "var_mode_pad", None),
+        for var in (getattr(self, "var_mode_dash", None),
+                    getattr(self, "var_mode_pad", None),
                     getattr(self, "var_mode_g29", None),
                     getattr(self, "var_mode_diag", None)):
             if var is not None and var.get() != label:
@@ -1881,6 +2063,10 @@ class PanelApp:
     def _on_backend(self) -> None:
         self._on_mode_change(self.var_mode_diag)
 
+    def _on_hide_unused(self) -> None:
+        self.cfg.output.hide_unused = bool(self.var_hide_unused.get())
+        self._reopen_output()
+
     def _on_vjoy_device(self) -> None:
         try:
             self.cfg.output.vjoy_device = int(self.var_vjoy_id.get())
@@ -1895,7 +2081,7 @@ class PanelApp:
         zmianie trybu modalne okno byloby uciazliwe, a tresc bledu i tak
         trafia do podpowiedzi pod statusem oraz do dziennika.
         """
-        ok = self.engine.open_output()
+        ok = self.engine.open_output(ask_again=show_errors)
         if not ok and show_errors:
             msg = self.engine.output_error or self.engine.pad_error
             if msg:
@@ -1922,9 +2108,12 @@ class PanelApp:
                 lines.append(f"Wersja vJoy: {(ver >> 8) & 0xFF:x}.{ver & 0xFF:02x}")
             if info.get("product"):
                 lines.append(f"Produkt: {info['product']}")
-            lines.append(f"Sterownik włączony: {'tak' if info['enabled'] else 'NIE'}")
+            enabled_txt = "tak" if info["enabled"] else "NIE"
+            if not info["enabled"] and self.cfg.output.vjoy_wanted is False:
+                enabled_txt = "nie - wyłączony przez panel (tryb bez vJoy)"
+            lines.append(f"Sterownik włączony: {enabled_txt}")
             devices = info.get("devices") or {}
-            if not devices:
+            if not devices and info["enabled"]:
                 lines.append("")
                 lines.append("Brak włączonych urządzeń vJoy. Uruchom vJoyConf, "
                              "zaznacz Device 1 i kliknij Apply.")
@@ -1955,7 +2144,7 @@ class PanelApp:
         pad = self.engine.pad_output
         if pad is not None and pad.is_open:
             slot = pad.slot
-            lines.append(f"  pad        : podłączony"
+            lines.append("  pad        : podłączony"
                          + (f", gniazdo XInput {slot + 1}" if slot is not None else ""))
         elif self.cfg.output.pad_on:
             lines.append("  pad        : nie wystartował")
@@ -2010,25 +2199,56 @@ class PanelApp:
         self.txt_log.delete("1.0", "end")
         self.txt_log.configure(state="disabled")
 
+    def _copy_log(self) -> None:
+        """Dziennik do schowka - z wersja panelu i firmware, do zgloszenia bledu."""
+        hello = self.engine.link.hello
+        head = (f"{APP_TITLE} {APP_VERSION}, tryb {self.cfg.output.mode}, "
+                f"firmware {hello.firmware if hello else '-'}, "
+                f"Python {sys.version.split()[0]}")
+        text = head + "\n" + self.txt_log.get("1.0", "end-1c")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.lbl_log_copied.configure(text="✓ Skopiowano")
+        self._copied_token += 1
+        token = self._copied_token
+
+        def clear() -> None:
+            if token == self._copied_token and not self._closing:
+                self.lbl_log_copied.configure(text="")
+
+        self.root.after(3000, clear)
+
+    def _config_snapshot(self) -> str:
+        return json.dumps(self.cfg.to_dict(), sort_keys=True)
+
     def _save_config(self) -> None:
         try:
             path = self.cfg.save()
         except OSError as exc:
             messagebox.showerror("Zapis ustawień", str(exc), parent=self.root)
             return
+        self._saved_snapshot = self._config_snapshot()
         self._log("ok", f"Ustawienia zapisane: {path}")
         # Wpis w dzienniku widac tylko w Diagnostyce - tu potwierdzenie
         # stoi obok przycisku, ktory sie kliknelo.
-        self._saved_token += 1
-        token = self._saved_token
+        self._saved_flash_until = time.monotonic() + SAVED_FLASH_S
         self.lbl_saved.configure(text="✓ Zapisano " + time.strftime("%H:%M:%S"),
                                  fg=theme.GOOD)
 
-        def restore() -> None:
-            if token == self._saved_token and not self._closing:
-                self.lbl_saved.configure(text=SAVE_HINT, fg=theme.MUTED)
+    def _refresh_saved_label(self) -> None:
+        """Obok "Zapisz ustawienia": czy cos zmieniono od ostatniego zapisu.
 
-        self.root.after(4000, restore)
+        Porownujemy cala konfiguracje z migawka z chwili zapisu - zadna
+        zmiana nie przejdzie bokiem, a dwa razy na sekunde to nic nie kosztuje.
+        """
+        now = time.monotonic()
+        if now < self._saved_flash_until or now - self._dirty_check_t < 0.5:
+            return
+        self._dirty_check_t = now
+        dirty = self._config_snapshot() != self._saved_snapshot
+        configure_if_changed(self.lbl_saved,
+                             text=DIRTY_HINT if dirty else SAVE_HINT,
+                             fg=theme.WARN if dirty else theme.MUTED)
 
     def _on_close(self) -> None:
         if self._closing:
@@ -2053,7 +2273,16 @@ class PanelApp:
         try:
             self._refresh()
         except Exception as exc:                 # interfejs nie moze przerwac petli
-            self._enqueue_log("error", f"Błąd odświeżania: {exc!r}")
+            # Ten sam blad wraca co klatke - 60 wpisow na sekunde zapchaloby
+            # dziennik i zamulilo okno. Powtorke wpisujemy raz na 5 s.
+            tb = traceback.extract_tb(exc.__traceback__)
+            where = f" [{Path(tb[-1].filename).name}:{tb[-1].lineno}]" if tb else ""
+            text = f"Błąd odświeżania: {exc!r}{where}"
+            now = time.monotonic()
+            if (text != self._tick_error
+                    or now - self._tick_error_t > TICK_ERROR_REPEAT_S):
+                self._tick_error, self._tick_error_t = text, now
+                self._enqueue_log("error", text)
         finally:
             if not self._closing:
                 self._schedule_tick()
@@ -2088,6 +2317,14 @@ class PanelApp:
         dlugosci napisu takze przeliczenie ukladu okna.
         """
         self._drain_log()
+        self._refresh_saved_label()
+        if not self.engine.ui_hwnd:
+            self.engine.ui_hwnd = self._window_handle()
+
+        switching = self.engine.status.vjoy_switching
+        if self._vjoy_was_switching and not switching:
+            self._update_vjoy_text()        # stan sterownika zmienil sie w tle
+        self._vjoy_was_switching = switching
 
         link = self.engine.link
         state = link.state
@@ -2097,7 +2334,12 @@ class PanelApp:
         set_ = configure_if_changed
 
         # --- naglowek ---
-        if connected:
+        self._poll_flash()
+        if self._flash_proc is not None:
+            self.dot_link.set(theme.WARN)
+            set_(self.lbl_link, text="wgrywanie firmware…", fg=theme.WARN)
+            set_(self.btn_connect, text="Połącz", style="Accent.TButton")
+        elif connected:
             self.dot_link.set(theme.GOOD)
             set_(self.lbl_link, text=f"{stats.port} - {stats.frames_per_sec:.0f} Hz",
                  fg=theme.GOOD)
@@ -2120,28 +2362,34 @@ class PanelApp:
             self.dot_vjoy.set(theme.MUTED)
             set_(self.lbl_vjoy, text="podgląd", fg=theme.TEXT_DIM)
         else:
-            parts, all_ok = [], True
+            # level: 0 dziala, 1 w trakcie (np. okno UAC), 2 blad
+            parts, level = [], 0
             if self.cfg.output.wheel_on:
-                parts.append(f"vJoy #{self.cfg.output.vjoy_device}"
-                             if vjoy_ok else "vJoy błąd")
-                all_ok = all_ok and vjoy_ok
+                if vjoy_ok:
+                    parts.append(f"vJoy #{self.cfg.output.vjoy_device}")
+                elif self.engine.status.vjoy_switching:
+                    parts.append("vJoy: włączanie")
+                    level = max(level, 1)
+                else:
+                    parts.append("vJoy błąd")
+                    level = 2
             if self.cfg.output.pad_on:
                 parts.append("pad" if pad_ok else "pad błąd")
-                all_ok = all_ok and pad_ok
+                level = level if pad_ok else 2
             if self.cfg.output.g29_on:
-                st = self.engine.status
-                if not connected:
-                    parts.append("G29: brak płytki")
-                elif not st.g29_fw:
-                    parts.append("G29: stary firmware")
-                elif not st.g29_usb:
-                    parts.append("G29: podłącz Native USB")
-                else:
-                    parts.append("G29")
-                all_ok = all_ok and connected and st.g29_fw and st.g29_usb
-            self.dot_vjoy.set(theme.GOOD if all_ok else theme.BAD)
-            set_(self.lbl_vjoy, text=" + ".join(parts),
-                 fg=theme.GOOD if all_ok else theme.BAD)
+                text, g29_level = {
+                    "offline": ("G29: brak płytki", 2),
+                    "old_fw": ("G29: stary firmware", 2),
+                    "attaching": ("G29: podłączanie", 1),
+                    "detecting": ("G29: wykrywanie", 1),
+                    "no_usb": ("G29: podłącz Native USB", 2),
+                    "ok": ("G29", 0),
+                }.get(self._g29_state(connected), ("G29", 0))
+                parts.append(text)
+                level = max(level, g29_level)
+            color = (theme.GOOD, theme.WARN, theme.BAD)[level]
+            self.dot_vjoy.set(color)
+            set_(self.lbl_vjoy, text=" + ".join(parts), fg=color)
 
         state_obj = self.engine.last_state
         live = state_obj is not None and connected
@@ -2177,13 +2425,26 @@ class PanelApp:
             if self.cfg.output.g29_on:
                 out_lines.append(self.engine.status.output_text)
             if self.cfg.output.wheel_on:
-                out_lines.append(self.engine.output.status_text())
+                # bez dzialajacego vJoy silnik ma podglad - jego opis "gry
+                # nie widza kierownicy" klamal w trybie G29 + vJoy
+                if vjoy_ok:
+                    out_lines.append(self.engine.output.status_text())
+                elif self.engine.status.vjoy_switching:
+                    out_lines.append("vJoy - czekam na włączenie sterownika")
+                else:
+                    out_lines.append("vJoy nieaktywne")
             if self.cfg.output.pad_on:
                 out_lines.append(self.engine.status.pad_text)
             if not out_lines:
                 out_lines.append("Tryb podglądu - gry nie widzą kierownicy")
             set_(self.lbl_output, text="\n".join(out_lines))
-            set_(self.lbl_output_hint, text=self._output_hint(connected, vjoy_ok, pad_ok))
+            hint = self._output_hint(connected, vjoy_ok, pad_ok)
+            set_(self.lbl_output_hint, text=hint)
+            if hint and not self.lbl_output_hint.winfo_manager():
+                self.lbl_output_hint.pack(anchor="w", pady=(6, 0),
+                                          after=self.lbl_output)
+            elif not hint and self.lbl_output_hint.winfo_manager():
+                self.lbl_output_hint.pack_forget()
             self.torque_meter.set(self.engine.status.ffb_torque)
 
             # --- przyciski presetow zakresu ---
@@ -2217,8 +2478,15 @@ class PanelApp:
         if tab == self.TAB_DIAG:
             self.diag_rows["port"].set(stats.port or "-")
             hello = link.hello
-            self.diag_rows["fw"].set(
-                f"{hello.name} {hello.firmware}" if hello else "-")
+            if hello is None:
+                self.diag_rows["fw"].set("-", theme.TEXT)
+            elif hello.outdated:
+                self.diag_rows["fw"].set(
+                    f"{hello.name} {hello.firmware} "
+                    f"(nowszy: {protocol.FW_LATEST_TEXT})", theme.WARN)
+            else:
+                self.diag_rows["fw"].set(f"{hello.name} {hello.firmware}",
+                                         theme.TEXT)
             self.diag_rows["fps"].set(f"{stats.frames_per_sec:.0f} Hz",
                                       theme.GOOD if stats.frames_per_sec > 50
                                       else theme.WARN)
@@ -2311,40 +2579,71 @@ class PanelApp:
 
     def _output_buttons_text(self, state_obj) -> Tuple[str, str]:
         """Co idzie do gry z przyciskow: (zakladka Przyciski, Pulpit)."""
+        out_txt = (", ".join(str(b) for b in sorted(state_obj.out_buttons))
+                   or "nic")
+        hat_txt = ("" if state_obj.hat < 0
+                   else f"   krzyżak: {HAT_DIRECTIONS[state_obj.hat]}")
         if self.cfg.output.g29_on:
-            # G29 ma wlasne przypisania - lista vJoy tutaj nic nie zmienia
+            # G29 ma wlasne przypisania - lista vJoy dotyczy tylko vJoy
             rep = (self.engine.last_g29
                    or build_g29_report(state_obj, self.cfg))
             act = g29_active(rep)
             g29_txt = ", ".join(G29_CONTROL_LABELS[n] for n in G29_CONTROLS
                                 if act.get(n)) or "nic"
+            if self.cfg.output.vjoy_buttons_only:
+                return (f"Wysyłane do vJoy: {out_txt}{hat_txt}   |   "
+                        f"do G29: {g29_txt}",
+                        f"Do G29: {g29_txt}\nDo vJoy: {out_txt}{hat_txt}")
             return (f"Tryb G29 - przypisania są w zakładce G29. "
                     f"Wciśnięte na G29: {g29_txt}", f"Do G29: {g29_txt}")
-        out_txt = (", ".join(str(b) for b in sorted(state_obj.out_buttons))
-                   or "nic")
-        hat_txt = ("" if state_obj.hat < 0
-                   else f"   krzyżak: {HAT_DIRECTIONS[state_obj.hat]}")
         return (f"Wysyłane do vJoy: {out_txt}{hat_txt}",
                 f"Do vJoy: {out_txt}{hat_txt}")
 
     def _output_hint(self, connected: bool, vjoy_ok: bool, pad_ok: bool) -> str:
         g29 = self.engine.status
-        if self.cfg.output.g29_on and connected and not g29.g29_fw:
+        out = self.cfg.output
+        g29_state = self._g29_state(connected)
+        if out.g29_on and g29_state == "old_fw":
             return ("Firmware płytki nie ma trybu G29 - wgraj nowy "
-                    "(firmware/kierownica/wgraj_firmware.bat).")
-        if self.cfg.output.g29_on and connected and not g29.g29_usb:
+                    "(Diagnostyka → Wgraj firmware).")
+        if out.g29_on and g29_state == "no_usb":
             return ("Windows nie widzi G29 - podłącz drugi kabel do portu "
                     "Native USB płytki.")
-        if self.cfg.output.pad_on and not pad_ok and self.engine.pad_error:
+        if g29.vjoy_switching:
+            verb = {True: "Włączam", False: "Wyłączam"}.get(out.vjoy_wanted,
+                                                            "Przełączam")
+            return (f"{verb} vJoy - Windows pyta o zgodę administratora "
+                    "(okno UAC).")
+        if out.pad_on and not pad_ok and self.engine.pad_error:
             return self.engine.pad_error.splitlines()[0]
-        if self.cfg.output.wheel_on and not vjoy_ok:
+        if out.wheel_on and not vjoy_ok:
+            if g29.vjoy_switch_error:
+                return (f"Nie udało się włączyć vJoy ({g29.vjoy_switch_error}). "
+                        "Ponów: Diagnostyka → Podłącz ponownie.")
+            error = (self.engine.output_error.splitlines()[0]
+                     if self.engine.output_error else "")
+            if out.vjoy_buttons_only:
+                return ("vJoy nie działa - gry widzą G29, ale bez dodatkowych "
+                        "przycisków z vJoy. " + error).strip()
             return (self.engine.output_error or
                     "vJoy nie jest aktywne - gry nie widzą kierownicy. "
                     "Sprawdź zakładkę Diagnostyka.")
-        conflicts = self._axis_conflicts()
+        if out.vjoy_wanted is False and g29.vjoy_switch_error:
+            return (f"Nie udało się ukryć vJoy ({g29.vjoy_switch_error}) - gry "
+                    "widzą je obok kierownicy. Ponów: Diagnostyka → "
+                    "Podłącz ponownie.")
+        # w trybie G29 + vJoy osie vJoy stoja na srodku - konflikty nie maja znaczenia
+        conflicts = ([] if out.vjoy_buttons_only
+                     else self._axis_conflicts())
         if conflicts:
             return ("Ta sama oś vJoy jest przypisana do kilku źródeł: "
                     + ", ".join(conflicts))
+        hello = self.engine.link.hello
+        if connected and hello is not None and hello.outdated:
+            return (f"Płytka ma firmware {hello.firmware}, a w "
+                    f"firmware/kierownica czeka {protocol.FW_LATEST_TEXT} - "
+                    "wgraj go (Diagnostyka → Wgraj firmware), żeby mieć "
+                    "wszystkie funkcje panelu.")
         return ""
 
     def _ffb_state_text(self, connected: bool) -> str:

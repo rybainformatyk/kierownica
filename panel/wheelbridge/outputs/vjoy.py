@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -153,6 +155,164 @@ def find_vjoy_dll() -> Optional[Path]:
         except OSError:
             continue
     return None
+
+
+# ------------------------------------------- wlaczanie / wylaczanie sterownika
+#
+# Sterownik vJoy trzyma swoje urzadzenia w systemie przez caly czas, takze
+# gdy nikt ich nie zasila - gra widzi wtedy obok G29 drugi joystick ze
+# stojacymi osiami. Jedyny sposob, zeby zniknal, to wylaczyc sterownik
+# ("vJoyConfig enable off"). To wymaga administratora, wiec bez uprawnien
+# prosimy o nie przez UAC. Stan zostaje w Windowsie, takze po restarcie,
+# wiec pytanie pojawia sie tylko przy zmianie trybu.
+
+_CONFIG_EXE = "vJoyConfig.exe"
+_ERROR_CANCELLED = 1223
+
+
+def find_vjoy_config() -> Optional[Path]:
+    dirs: List[Path] = []
+    dll = find_vjoy_dll()
+    if dll is not None:
+        dirs.append(dll.parent)
+    dirs += _candidate_dirs()
+    for d in dirs:
+        candidate = d / _CONFIG_EXE
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def vjoy_driver_enabled() -> Optional[bool]:
+    """Czy sterownik vJoy jest wlaczony. None - vJoy nie jest zainstalowany."""
+    try:
+        api = _get_api()
+        return bool(api.dll.vJoyEnabled())
+    except Exception:
+        return None
+
+
+def _is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def _run_elevated(exe: Path, args: str, timeout_s: float,
+                  hwnd: int = 0) -> Optional[int]:
+    """Uruchamia program z uprawnieniami administratora (UAC) i czeka na koniec.
+
+    `hwnd` to okno panelu - okno UAC wyskakuje wtedy nad nim, a nie jako
+    migajacy przycisk na pasku zadan.
+    Zwraca kod wyjscia, None gdy uzytkownik odmowil albo program nie ruszyl.
+    """
+    from ctypes import wintypes
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", ctypes.c_ulong),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            ("hIconOrMonitor", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    SEE_MASK_FLAG_NO_UI = 0x00000400
+    SW_HIDE = 0
+    COINIT_APARTMENTTHREADED = 0x2
+    COINIT_DISABLE_OLE1DDE = 0x4
+
+    ole32 = ctypes.WinDLL("ole32")
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+    ole32.CoInitializeEx.restype = ctypes.c_long
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE,
+                                            ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(info)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI
+    info.hwnd = hwnd or None
+    info.lpVerb = "runas"
+    info.lpFile = str(exe)
+    info.lpParameters = args
+    info.lpDirectory = str(exe.parent)
+    info.nShow = SW_HIDE
+    # ShellExecuteEx potrafi siegac po rozszerzenia powloki przez COM, a
+    # wola go watek przelaczania vJoy - Microsoft zaleca wtedy zainicjowac
+    # COM w tym watku. ole32 jest bez use_last_error, wiec nie zamaze kodu
+    # bledu ShellExecuteEx, ktory czyta set_vjoy_driver.
+    com = ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED
+                               | COINIT_DISABLE_OLE1DDE)
+    try:
+        if not shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
+            return None
+    finally:
+        if com >= 0:                # S_OK i S_FALSE trzeba zamknac
+            ole32.CoUninitialize()
+    try:
+        kernel32.WaitForSingleObject(info.hProcess, int(timeout_s * 1000))
+        code = wintypes.DWORD(0)
+        kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
+        return int(code.value)
+    finally:
+        kernel32.CloseHandle(info.hProcess)
+
+
+def set_vjoy_driver(enabled: bool, timeout_s: float = 20.0,
+                    hwnd: int = 0) -> Tuple[bool, str]:
+    """Wlacza albo wylacza sterownik vJoy. Zwraca (udalo sie, opis).
+
+    Czeka na okno UAC i na vJoyConfig - wolac poza watkiem interfejsu.
+    """
+    exe = find_vjoy_config()
+    if exe is None:
+        return False, (f"nie znaleziono {_CONFIG_EXE} - "
+                       f"{'włącz' if enabled else 'wyłącz'} vJoy ręcznie w vJoyConf")
+    args = "enable " + ("on" if enabled else "off")
+    if _is_admin():
+        try:
+            subprocess.run([str(exe)] + args.split(), timeout=timeout_s,
+                           capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, f"{_CONFIG_EXE}: {exc}"
+    elif _run_elevated(exe, args, timeout_s, hwnd) is None:
+        if ctypes.get_last_error() == _ERROR_CANCELLED:
+            return False, "brak zgody administratora (okno UAC zamknięte)"
+        return False, f"nie udało się uruchomić {_CONFIG_EXE}"
+
+    # Urzadzenie pojawia sie / znika chwile po zakonczeniu vJoyConfig
+    deadline = time.monotonic() + 5.0
+    while True:
+        if vjoy_driver_enabled() == enabled:
+            return True, "vJoy " + ("włączone" if enabled else
+                                    "wyłączone - gry go nie widzą")
+        if time.monotonic() > deadline:
+            return False, ("vJoyConfig nie zmienił stanu sterownika - "
+                           "możliwe, że trzeba zrestartować komputer")
+        time.sleep(0.2)
 
 
 def vjoy_diagnostics() -> Dict[str, object]:

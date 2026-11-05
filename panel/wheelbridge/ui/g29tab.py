@@ -126,9 +126,10 @@ class G29Tab:
 
         fit_wrap(ttk.Label(
             view.body, style="Muted.TLabel", wraplength=1080, justify="left",
-            text="Te przypisania działają tylko w trybie Kierownica G29 i "
-                 "nie zależą od zakładki Pad ani od listy vJoy w zakładce "
-                 "Przyciski. Krzyżak bez przypisań bierze kierunki z "
+            text="Te przypisania działają w trybach z G29 (Kierownica G29 "
+                 "oraz G29 + vJoy) i nie zależą od zakładki Pad ani od listy "
+                 "vJoy w zakładce Przyciski. Krzyżak bez przypisań bierze "
+                 "kierunki z "
                  "krzyżaka ustawionego w zakładce Przyciski. Biegi to "
                  "przyciski skrzyni G29 - przypisz je, jeśli masz "
                  "własną skrzynię albo manetki."
@@ -145,14 +146,17 @@ class G29Tab:
             self.view.set_assignments(self.cfg.g29.buttons)
 
     def _status(self, connected: bool):
-        st = self.app.engine.status
-        if not connected:
+        state = self.app._g29_state(connected)
+        if state == "offline":
             return "Brak połączenia z płytką", theme.MUTED
-        if not st.g29_fw:
-            return "Firmware bez trybu G29 - wgraj nowy (wgraj_firmware.bat)", theme.BAD
+        if state == "old_fw":
+            return ("Firmware bez trybu G29 - wgraj nowy (Diagnostyka → "
+                    "Wgraj firmware)", theme.BAD)
         if not self.cfg.output.g29_on:
             return "Tryb G29 wyłączony - gra nie dostaje tych przypisań", theme.WARN
-        if not st.g29_usb:
+        if state in ("attaching", "detecting"):
+            return "G29 podłącza się do Windowsa…", theme.WARN
+        if state == "no_usb":
             return "Podłącz kabel do portu Native USB", theme.BAD
         return "Windows widzi G29 - przypisania działają w grze", theme.GOOD
 
