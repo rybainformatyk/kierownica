@@ -25,18 +25,23 @@ using Microsoft::WRL::ComPtr;
 using RGB = uint32_t;  // 0xRRGGBB
 
 // ---------------------------------------------------------------- paleta
+//
+// Grafit z cienkimi liniami, jeden akcent. Kolory telemetrii (gaz, hamulec,
+// sprzeglo, moment) pojawiaja sie tylko tam, gdzie cos znacza.
 
-inline constexpr RGB BG = 0x0b0e14;         // tlo okna
-inline constexpr RGB PANEL = 0x151a23;      // karta
-inline constexpr RGB PANEL_HI = 0x1e2531;   // pole w karcie, naglowek
-inline constexpr RGB ELEV = 0x273041;       // element uniesiony
-inline constexpr RGB BORDER = 0x28313f;     // ramka karty
-inline constexpr RGB BORDER_HI = 0x38445a;  // ramka pola pod kursorem
-inline constexpr RGB TRACK = 0x222a37;      // rowek paska, nieaktywna dioda
-inline constexpr RGB TEXT = 0xe9eef7;
-inline constexpr RGB TEXT_DIM = 0xa3b2c7;
-inline constexpr RGB MUTED = 0x6d7d93;
+inline constexpr RGB BG = 0x0a0c11;         // tlo okna
+inline constexpr RGB SIDEBAR = 0x0d1016;    // pasek nawigacji
+inline constexpr RGB PANEL = 0x131720;      // karta
+inline constexpr RGB PANEL_HI = 0x1b212b;   // pole w karcie
+inline constexpr RGB ELEV = 0x262e3a;       // element pod kursorem
+inline constexpr RGB BORDER = 0x232a35;     // linia wlosowa
+inline constexpr RGB BORDER_HI = 0x364152;  // linia pod kursorem
+inline constexpr RGB TRACK = 0x222a36;      // rowek paska, nieaktywna dioda
+inline constexpr RGB TEXT = 0xf0f4fa;
+inline constexpr RGB TEXT_DIM = 0xa9b4c4;
+inline constexpr RGB MUTED = 0x7f8b9e;
 inline constexpr RGB ACCENT = 0x4cc2ff;
+inline constexpr RGB ACCENT_HI = 0x83d6ff;
 inline constexpr RGB ACCENT_DIM = 0x1b5478;
 inline constexpr RGB ACCENT_DEEP = 0x123a55;
 inline constexpr RGB ACCENT_INK = 0x06131d;  // tekst na tle akcentu
@@ -52,8 +57,12 @@ inline RGB lighten(RGB c, double t) { return mix(c, WHITE, t); }
 inline RGB darken(RGB c, double t) { return mix(c, BLACK, t); }
 
 enum class Font {
-    Base, Small, Tiny, Bold, SmallBold, TinyBold, Heading, Title, Big, Huge,
-    Mono, MonoSmall, MonoBold, Icon, Micro, Count
+    Body, BodyStrong, Small, SmallStrong, Tiny, TinyStrong, Caps,
+    Head, Title, Num, NumLarge, NumHuge, NumGiant,
+    Mono, MonoSmall, MonoStrong, Icon, IconSmall, IconLarge, Micro,
+    Count,
+    // nazwy uzywane przez rysunki pada i kierownicy
+    Base = Body, Bold = BodyStrong, SmallBold = SmallStrong, TinyBold = TinyStrong, Heading = Head,
 };
 
 enum class Align { Left, Center, Right };
@@ -70,6 +79,8 @@ struct Rect {
     bool intersects(const Rect& o) const {
         return x < o.right() && o.x < right() && y < o.bottom() && o.y < bottom();
     }
+    Rect inset(float d) const { return {x + d, y + d, w - 2 * d, h - 2 * d}; }
+    Rect inset(float dx, float dy) const { return {x + dx, y + dy, w - 2 * dx, h - 2 * dy}; }
 };
 
 // Ksztalty we wspolrzednych plotna, jak krotki w art.py. Katy w stopniach,
@@ -108,6 +119,7 @@ public:
     ID2D1Factory1* factory() { return factory_.Get(); }
     IDWriteFactory* dwrite() { return dwrite_.Get(); }
     bool has_icon_font() const { return !icon_family_.empty(); }
+    const std::wstring& display_family() const { return display_family_; }
 
     void set_target(ID2D1RenderTarget* rt);
     ID2D1RenderTarget* target() { return rt_; }
@@ -119,27 +131,50 @@ public:
     void clear(RGB color);
     void fill_rect(const Rect& r, RGB color, float alpha = 1.0f);
     void fill_rrect(const Rect& r, float radius, RGB color, float alpha = 1.0f);
-    void stroke_rrect(const Rect& r, float radius, RGB color, float width = 1.0f);
+    void stroke_rrect(const Rect& r, float radius, RGB color, float width = 1.0f, float alpha = 1.0f);
     void fill_circle(float cx, float cy, float r, RGB color, float alpha = 1.0f);
     void stroke_circle(float cx, float cy, float r, RGB color, float width = 1.0f, float alpha = 1.0f);
     void line(float x1, float y1, float x2, float y2, RGB color, float width = 1.0f, float alpha = 1.0f);
     void polyline(const std::vector<Pt>& pts, RGB color, float width, float alpha = 1.0f);
     void fill_poly(const std::vector<Pt>& pts, RGB color, float alpha = 1.0f);
-    void arc(float cx, float cy, float r, float a0, float a1, RGB color, float width);
+    void arc(float cx, float cy, float r, float a0, float a1, RGB color, float width, float alpha = 1.0f);
     void fill_shape(const Shape& s, RGB color, float alpha = 1.0f);
+
+    // Gradienty: pionowy miedzy gora i dolem prostokata, poziomy miedzy bokami.
+    void fill_rrect_v(const Rect& r, float radius, RGB top, RGB bottom, float a_top = 1.0f, float a_bottom = 1.0f);
+    void fill_rrect_h(const Rect& r, float radius, RGB left, RGB right, float a_left = 1.0f, float a_right = 1.0f);
+    void fill_poly_v(const std::vector<Pt>& pts, float y0, float y1, RGB top, RGB bottom, float a_top, float a_bottom);
+    void stroke_rrect_v(const Rect& r, float radius, RGB top, RGB bottom, float a_top, float a_bottom, float width = 1.0f);
+    void fill_radial(const Rect& clip, float radius, float cx, float cy, float r, RGB inner, RGB outer, float a_inner, float a_outer);
+
+    // Miekki cien / poswiata wokol prostokata (9 wycinkow z rozmytego wzoru).
+    void shadow(const Rect& r, float radius, float blur, RGB color, float alpha, float dy = 0.0f);
+
+    // Tlo tresci: ledwo widoczna poswiata z ditheringiem, bez widocznych pasow.
+    void backdrop(float x, float y);
 
     void draw_sprite(const Sprite& s, float dx = 0, float dy = 0);
     void draw_sprite_rotated(const Sprite& s, float cx, float cy, float deg);
 
     void text(const Rect& r, std::string_view s, Font font, RGB color, Align align = Align::Left,
               bool wrap = false, float alpha = 1.0f);
+    // Jak text(), ale za dlugi napis konczy sie wielokropkiem zamiast urwana litera.
+    void text_fit(const Rect& r, std::string_view s, Font font, RGB color, Align align = Align::Left, float alpha = 1.0f);
     // Napis wysrodkowany w punkcie.
-    void text_at(float x, float y, std::string_view s, Font font, RGB color);
+    void text_at(float x, float y, std::string_view s, Font font, RGB color, float alpha = 1.0f);
     // Rozmiar napisu; max_w <= 0 - bez lamania.
     D2D1_SIZE_F measure(std::string_view s, Font font, float max_w = 0.0f);
+    // Kreciolek postepu; `time` w sekundach.
+    void spinner(float cx, float cy, float r, RGB color, double time, float width = 2.0f);
 
     void push_clip(const Rect& r);
     void pop_clip();
+    void push_rounded_clip(const Rect& r, float radius);
+    void pop_rounded_clip();
+    void begin_opacity(float alpha);
+    void end_opacity();
+    void push_translate(float dx, float dy);
+    void pop_translate();
 
     // Obrazek z pamieci - render() wolany tylko przy pierwszym uzyciu.
     const Sprite& cached(const std::string& key, const std::function<Sprite()>& render);
@@ -149,10 +184,11 @@ public:
     ComPtr<ID2D1StrokeStyle> round_stroke();
     ComPtr<ID2D1StrokeStyle> flat_stroke();
     IDWriteTextFormat* format(Font font);
-    ComPtr<IDWriteTextLayout> layout(std::string_view s, Font font, float max_w, Align align, bool wrap);
+    ComPtr<IDWriteTextLayout> layout(std::string_view s, Font font, float max_w, Align align, bool wrap, bool trim = false);
 
 private:
     Gfx() = default;
+    ComPtr<ID2D1LinearGradientBrush> linear(RGB a, RGB b, float alpha_a, float alpha_b, D2D1_POINT_2F p0, D2D1_POINT_2F p1);
 
     ComPtr<ID2D1Factory1> factory_;
     ComPtr<IDWriteFactory> dwrite_;
@@ -161,10 +197,14 @@ private:
     ComPtr<ID2D1SolidColorBrush> solid_;
     ComPtr<ID2D1StrokeStyle> round_;
     ComPtr<ID2D1StrokeStyle> flat_;
+    ComPtr<IDWriteTypography> tabular_;
     std::wstring icon_family_;
+    std::wstring display_family_;
     std::vector<ComPtr<IDWriteTextFormat>> formats_;
     std::unordered_map<std::string, ComPtr<IDWriteTextLayout>> layouts_;
     std::unordered_map<std::string, Sprite> sprites_;
+    std::unordered_map<std::string, ComPtr<ID2D1LinearGradientBrush>> gradients_;
+    std::vector<D2D1_MATRIX_3X2_F> transforms_;
 };
 
 // Obrazek RGBA malowany raz - odpowiednik art.Paint.

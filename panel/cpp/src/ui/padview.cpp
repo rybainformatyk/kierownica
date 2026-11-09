@@ -857,8 +857,7 @@ void WheelCanvas::paint_body(Paint& p) {
 
     // obrecz z gumy: cien, gradient, polysk i przeszycie
     Shape rim = Shape::ring(WCX, WCY, RIM_OUT, RIM_IN, -90, 270);
-    p.shadow(Shape::circle(WCX, WCY, RIM_OUT), 10, 10, 170);
-    p.fill(Shape::circle(WCX, WCY, RIM_IN), PANEL);
+    p.shadow(rim, 10, 10, 170);
     p.gradient(rim, 0x3a4250, 0x161a21);
     p.sheen(rim, 40, 0.35f);
     float mid = (RIM_OUT + RIM_IN) / 2;
@@ -1044,7 +1043,7 @@ public:
     double value = 0;
     double flash_until = 0;
 
-    Size measure(float avail_w) override { return {avail_w, Gfx::get().measure("Ag", Font::Small).height + 10}; }
+    Size measure(float avail_w) override { return {avail_w, 31}; }
 
     void set_text(const std::string& t) {
         if (text != t) {
@@ -1087,7 +1086,7 @@ public:
 
         float cell_x = r.x + name_width;
         float cell_w = r.w - name_width - (BAR_W + 10);
-        Rect cell{cell_x, r.y + 1, std::max(40.0f, cell_w), r.h - 2};
+        Rect cell{cell_x, r.y + 2, std::max(40.0f, cell_w), r.h - 4};
 
         bool flashing = monotonic() < flash_until && state != "learning";
         RGB bg, fg, border;
@@ -1116,10 +1115,10 @@ public:
             bg = lighten(bg, 0.07);
             border = mix(border, ACCENT, 0.55);
         }
-        g.fill_rect(cell, border);
-        g.fill_rect({cell.x + 1, cell.y + 1, cell.w - 2, cell.h - 2}, bg);
-        std::string shown = state == "learning" ? "wciśnij przycisk…" : (text.empty() ? EMPTY_SLOT : text);
-        g.text({cell.x + 8, cell.y, cell.w - 12, cell.h}, shown, Font::Small, fg);
+        g.fill_rrect(cell, 7, bg);
+        g.stroke_rrect(cell, 7, border);
+        std::string shown = state == "learning" ? "wciśnij…" : (text.empty() ? EMPTY_SLOT : text);
+        g.text_fit({cell.x + 10, cell.y, cell.w - 14, cell.h}, shown, Font::Small, fg);
 
         if (axis) {
             float bx = cell.right() + 8, by = r.y + (r.h - BAR_H) / 2;
@@ -1181,12 +1180,12 @@ std::string PadView::hint_text() const {
     return out;
 }
 
-float PadView::hint_height(float w) { return Gfx::get().measure(hint_text(), Font::Small, std::max(120.0f, w - 30)).height + 14; }
+float PadView::hint_height(float w) { return Gfx::get().measure(hint_text(), Font::Small, std::max(120.0f, w - 52)).height + 20; }
 
 float PadView::list_min_height(float) {
     Gfx& g = Gfx::get();
-    float row_h = g.measure("Ag", Font::Small).height + 10;
-    float head_h = g.measure("Ag", Font::TinyBold).height + 4;
+    float row_h = 31;
+    float head_h = g.measure("Ag", Font::Caps).height + 6;
     float best = 0;
     for (const auto& column : spec_.groups) {
         float h = 0;
@@ -1201,9 +1200,9 @@ float PadView::list_min_height(float) {
 
 Size PadView::measure(float avail_w) {
     Size canvas = canvas_->measure(avail_w);
-    float legend_h = Gfx::get().measure("Ag", Font::Tiny).height + 10;
-    float hint = hint_height(avail_w) + 12;
-    bool stacked = avail_w < canvas.w + 18 + 560;
+    float legend_h = Gfx::get().measure("Ag", Font::Tiny).height + 16;
+    float hint = hint_height(avail_w) + 14;
+    bool stacked = avail_w < canvas.w + 28 + 470;
     float left = canvas.h + legend_h;
     float list = list_min_height(avail_w);
     return {avail_w, hint + (stacked ? left + 16 + list : std::max(left, list))};
@@ -1215,23 +1214,24 @@ void PadView::arrange(const Rect& rc) {
     float hint_h = hint_height(rc.w);
     hint_r_ = {rc.x, rc.y, rc.w, hint_h};
     Size canvas = canvas_->measure(rc.w);
-    float legend_h = g.measure("Ag", Font::Tiny).height + 10;
-    bool stacked = rc.w < canvas.w + 18 + 560;
-    float top = rc.y + hint_h + 12;
+    float legend_h = g.measure("Ag", Font::Tiny).height + 16;
+    bool stacked = rc.w < canvas.w + 28 + 470;
+    float top = rc.y + hint_h + 14;
 
     float cx = stacked ? rc.x + (rc.w - canvas.w) / 2 : rc.x;
     canvas_->arrange({cx, top, canvas.w, canvas.h});
     legend_r_ = {cx, top + canvas.h, canvas.w, legend_h};
 
-    float list_x = stacked ? rc.x : rc.x + canvas.w + 18;
+    stage_r_ = stacked ? Rect{rc.x, top, rc.w, canvas.h + legend_h} : Rect{rc.x, top, canvas.w, canvas.h + legend_h};
+    float list_x = stacked ? rc.x : rc.x + canvas.w + 28;
     float list_y = stacked ? top + canvas.h + legend_h + 16 : top;
-    float list_w = stacked ? rc.w : rc.w - canvas.w - 18;
+    float list_w = stacked ? rc.w : rc.w - canvas.w - 28;
 
     size_t col_count = spec_.groups.size();
     float gap = 22;
     float col_w = (list_w - gap * static_cast<float>(col_count - 1)) / static_cast<float>(col_count);
-    float row_h = g.measure("Ag", Font::Small).height + 10;
-    float head_h = g.measure("Ag", Font::TinyBold).height + 4;
+    float row_h = 31;
+    float head_h = g.measure("Ag", Font::Caps).height + 6;
 
     size_t header = 0;
     for (size_t c = 0; c < col_count; ++c) {
@@ -1253,33 +1253,42 @@ void PadView::paint(Gfx& g) {
     bool learning = learning_.has_value();
     RGB bg = learning ? mix(PANEL_HI, WARN, 0.14) : PANEL_HI;
     RGB border = learning ? mix(BORDER, WARN, 0.5) : BORDER;
-    g.fill_rect(hint_r_, border);
-    g.fill_rect({hint_r_.x + 1, hint_r_.y + 1, hint_r_.w - 2, hint_r_.h - 2}, bg);
-    g.fill_rect({hint_r_.x + 1, hint_r_.y + 1, 3, hint_r_.h - 2}, learning ? WARN : MUTED);
-    g.text({hint_r_.x + 15, hint_r_.y, hint_r_.w - 30, hint_r_.h}, hint_text(), Font::Small, learning ? WARN : MUTED, Align::Left, true);
+    g.fill_rrect(hint_r_, 10, bg);
+    g.stroke_rrect(hint_r_, 10, border);
+    g.text({hint_r_.x + 12, hint_r_.y, 20, hint_r_.h}, learning ? ic::target : ic::info, Font::IconSmall, learning ? WARN : MUTED, Align::Center);
+    g.text({hint_r_.x + 40, hint_r_.y, hint_r_.w - 52, hint_r_.h}, hint_text(), Font::Small, learning ? WARN : TEXT_DIM, Align::Left, true);
+    if (wizard_ && wizard_->second > 0) {
+        // postep kreatora na dolnej krawedzi podpowiedzi
+        float w = (hint_r_.w - 24) * static_cast<float>(wizard_->first) / static_cast<float>(wizard_->second);
+        g.fill_rrect({hint_r_.x + 12, hint_r_.bottom() - 4, hint_r_.w - 24, 2}, 1, BORDER_HI);
+        g.fill_rrect({hint_r_.x + 12, hint_r_.bottom() - 4, w, 2}, 1, WARN);
+    }
 
+    // scena: miekkie swiatlo pod rysunkiem
+    Rect cv = canvas_->r;
+    g.fill_radial(stage_r_, 14, cv.x + cv.w / 2, cv.y + cv.h * 0.45f, std::max(cv.w, cv.h) * 0.62f, 0x2a3442, 0x151a23, 0.85f, 0.0f);
     canvas_->paint(g);
 
     // legenda kolorow - bez niej trzeba zgadywac, co znaczy podswietlenie
     struct Entry { const char* text; RGB color; };
     const Entry items[] = {{"wciśnięte", ACCENT}, {"przypisane", mix(PANEL_HI, ACCENT, 0.20)}, {"uczy się", WARN}, {"wolne", PANEL_HI}};
     float total = 0;
-    for (const Entry& e : items) total += 16 + g.measure(e.text, Font::Tiny).width + 14;
-    float x = legend_r_.x + (legend_r_.w - total + 14) / 2, y = legend_r_.y + 10;
+    for (const Entry& e : items) total += 16 + g.measure(e.text, Font::Tiny).width + 18;
+    float x = cv.x + (cv.w - total + 18) / 2, y = cv.bottom() + 8;
     float th = g.measure("Ag", Font::Tiny).height;
     for (const Entry& e : items) {
         g.fill_circle(x + 5, y + th / 2, 4.5f, e.color);
         g.stroke_circle(x + 5, y + th / 2, 4.5f, BORDER_HI);
         float w = g.measure(e.text, Font::Tiny).width + 1;
         g.text({x + 16, y, w, th}, e.text, Font::Tiny, MUTED);
-        x += 16 + w + 14;
+        x += 16 + w + 18;
     }
 
     for (const auto& h : headers_) {
-        float w = g.measure(h.title, Font::TinyBold).width + 1;
-        g.text({h.r.x + 4, h.r.y, w, h.r.h - 4}, h.title, Font::TinyBold, MUTED);
+        float w = g.measure(h.title, Font::Caps).width + 2;
+        g.text({h.r.x + 4, h.r.y, w, h.r.h - 6}, h.title, Font::Caps, MUTED);
         float line_x = h.r.x + 4 + w + 8;
-        g.fill_rect({line_x, h.r.y + (h.r.h - 4) / 2 + 1, std::max(0.0f, h.r.right() - line_x), 1}, BORDER);
+        g.fill_rect({line_x, std::round(h.r.y + (h.r.h - 6) / 2), std::max(0.0f, h.r.right() - line_x), 1}, BORDER);
     }
     for (auto& row : rows_) row->paint(g);
 }

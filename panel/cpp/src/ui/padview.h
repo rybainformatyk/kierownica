@@ -203,7 +203,7 @@ private:
     ButtonMap assign_;
     LabelMap axis_labels_;
     std::map<std::string, bool> active_;
-    Rect hint_r_, legend_r_;
+    Rect hint_r_, legend_r_, stage_r_;
 };
 
 std::unique_ptr<PadView> make_pad_view(PadView::Callbacks callbacks);

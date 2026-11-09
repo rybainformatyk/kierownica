@@ -1,5 +1,7 @@
 #include "gfx.h"
 
+#include <dwrite_1.h>
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -11,7 +13,6 @@ namespace wb::ui {
 namespace {
 
 constexpr float PI = std::numbers::pi_v<float>;
-constexpr float PT = 96.0f / 72.0f;  // punkty -> DIP
 constexpr int GLOW_MARGIN = 22;      // zapas na poswiate wokol kontrolki
 constexpr int SHADOW_MARGIN = 10;    // bez poswiaty wystarczy zapas na cien
 
@@ -283,21 +284,43 @@ bool Gfx::init() {
         }
     }
 
-    struct Spec { const wchar_t* family; float size; bool bold; };
-    const wchar_t* ui = L"Segoe UI";
-    const wchar_t* mono = L"Consolas";
+    auto pick = [&](std::initializer_list<const wchar_t*> names) -> std::wstring {
+        for (const wchar_t* name : names) {
+            UINT32 index = 0;
+            BOOL exists = FALSE;
+            fonts->FindFamilyName(name, &index, &exists);
+            if (exists) return name;
+        }
+        return L"Segoe UI";
+    };
+    // Bahnschrift to kroj DIN - z tablic i zegarow samochodowych.
+    static const std::wstring ui = pick({L"Segoe UI Variable Text", L"Segoe UI"});
+    display_family_ = pick({L"Bahnschrift", L"Segoe UI Semibold", L"Segoe UI"});
+    static const std::wstring mono = pick({L"Cascadia Mono", L"Consolas"});
+    static const std::wstring icons = icon_family_.empty() ? ui : icon_family_;
+
+    struct Spec { const std::wstring* family; float px; DWRITE_FONT_WEIGHT weight; };
+    const auto regular = DWRITE_FONT_WEIGHT_NORMAL;
+    const auto strong = DWRITE_FONT_WEIGHT_SEMI_BOLD;
     const Spec specs[static_cast<int>(Font::Count)] = {
-        {ui, 10, false}, {ui, 9, false}, {ui, 8, false}, {ui, 10, true}, {ui, 9, true}, {ui, 8, true},
-        {ui, 11, true},  {ui, 15, true}, {ui, 26, true}, {ui, 34, true}, {mono, 9, false}, {mono, 8, false},
-        {mono, 9, true}, {icon_family_.empty() ? ui : icon_family_.c_str(), 11, false}, {ui, 6, true},
+        {&ui, 13.5f, regular}, {&ui, 13.5f, strong}, {&ui, 12.5f, regular}, {&ui, 12.5f, strong},
+        {&ui, 11.5f, regular}, {&ui, 11.5f, strong}, {&ui, 10.5f, strong},
+        {&display_family_, 16, strong}, {&display_family_, 27, strong},
+        {&display_family_, 15, strong}, {&display_family_, 23, strong},
+        {&display_family_, 36, strong}, {&display_family_, 60, strong},
+        {&mono, 12.5f, regular}, {&mono, 11.5f, regular}, {&mono, 12.5f, strong},
+        {&icons, 16, regular}, {&icons, 12, regular}, {&icons, 22, regular},
+        {&ui, 8, strong},
     };
     formats_.resize(static_cast<size_t>(Font::Count));
     for (int i = 0; i < static_cast<int>(Font::Count); ++i) {
-        const Spec& s = specs[i];
-        dwrite_->CreateTextFormat(s.family, nullptr, s.bold ? DWRITE_FONT_WEIGHT_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-                                  DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, s.size * PT, L"pl-pl",
-                                  &formats_[static_cast<size_t>(i)]);
+        const Spec& sp = specs[i];
+        dwrite_->CreateTextFormat(sp.family->c_str(), nullptr, sp.weight, DWRITE_FONT_STYLE_NORMAL,
+                                  DWRITE_FONT_STRETCH_NORMAL, sp.px, L"pl-pl", &formats_[static_cast<size_t>(i)]);
     }
+    // Cyfry o stalej szerokosci - liczby na zywo nie skacza.
+    dwrite_->CreateTypography(&tabular_);
+    if (tabular_) tabular_->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, 1});
     return true;
 }
 
@@ -309,6 +332,7 @@ void Gfx::set_target(ID2D1RenderTarget* rt) {
 void Gfx::drop_resources() {
     solid_.Reset();
     sprites_.clear();
+    gradients_.clear();
     ++generation_;
 }
 
@@ -363,11 +387,11 @@ void Gfx::fill_rrect(const Rect& r, float radius, RGB color, float alpha) {
                               brush(color, alpha).Get());
 }
 
-void Gfx::stroke_rrect(const Rect& r, float radius, RGB color, float width) {
+void Gfx::stroke_rrect(const Rect& r, float radius, RGB color, float width, float alpha) {
     float inset = width / 2;
     D2D1_RECT_F rc = D2D1::RectF(r.x + inset, r.y + inset, r.right() - inset, r.bottom() - inset);
     float rad = std::max(0.0f, radius - inset);
-    rt_->DrawRoundedRectangle(D2D1::RoundedRect(rc, rad, rad), brush(color).Get(), width);
+    rt_->DrawRoundedRectangle(D2D1::RoundedRect(rc, rad, rad), brush(color, alpha).Get(), width);
 }
 
 void Gfx::fill_circle(float cx, float cy, float r, RGB color, float alpha) {
@@ -394,8 +418,8 @@ void Gfx::fill_poly(const std::vector<Pt>& pts, RGB color, float alpha) {
     rt_->FillGeometry(path.Get(), brush(color, alpha).Get());
 }
 
-void Gfx::arc(float cx, float cy, float r, float a0, float a1, RGB color, float width) {
-    polyline(arc_points(cx, cy, r, a0, a1), color, width);
+void Gfx::arc(float cx, float cy, float r, float a0, float a1, RGB color, float width, float alpha) {
+    polyline(arc_points(cx, cy, r, a0, a1), color, width, alpha);
 }
 
 void Gfx::fill_shape(const Shape& s, RGB color, float alpha) {
@@ -417,12 +441,12 @@ void Gfx::draw_sprite_rotated(const Sprite& s, float cx, float cy, float deg) {
     rt_->SetTransform(old);
 }
 
-ComPtr<IDWriteTextLayout> Gfx::layout(std::string_view s, Font font, float max_w, Align align, bool wrap) {
+ComPtr<IDWriteTextLayout> Gfx::layout(std::string_view s, Font font, float max_w, Align align, bool wrap, bool trim) {
     std::string key;
     key.reserve(s.size() + 24);
     key += static_cast<char>('A' + static_cast<int>(font));
     key += static_cast<char>('0' + static_cast<int>(align));
-    key += wrap ? 'w' : 'n';
+    key += wrap ? 'w' : (trim ? 't' : 'n');
     key += std::to_string(static_cast<int>(max_w * 4));
     key += '|';
     key += s;
@@ -439,6 +463,18 @@ ComPtr<IDWriteTextLayout> Gfx::layout(std::string_view s, Font font, float max_w
         out->SetTextAlignment(align == Align::Left     ? DWRITE_TEXT_ALIGNMENT_LEADING
                               : align == Align::Center ? DWRITE_TEXT_ALIGNMENT_CENTER
                                                        : DWRITE_TEXT_ALIGNMENT_TRAILING);
+        if (trim) {
+            ComPtr<IDWriteInlineObject> sign;
+            DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+            if (SUCCEEDED(dwrite_->CreateEllipsisTrimmingSign(format(font), &sign))) out->SetTrimming(&trimming, sign.Get());
+        }
+        DWRITE_TEXT_RANGE all{0, static_cast<UINT32>(text.size())};
+        if (font == Font::Num || font == Font::NumLarge || font == Font::NumHuge || font == Font::NumGiant) {
+            if (tabular_) out->SetTypography(tabular_.Get(), all);
+        } else if (font == Font::Caps) {
+            ComPtr<IDWriteTextLayout1> spaced;
+            if (SUCCEEDED(out.As(&spaced))) spaced->SetCharacterSpacing(0.0f, 0.9f, 0.0f, all);
+        }
         layouts_[key] = out;
     }
     return out;
@@ -454,9 +490,29 @@ void Gfx::text(const Rect& r, std::string_view s, Font font, RGB color, Align al
     rt_->DrawTextLayout(D2D1::Point2F(r.x, y), l.Get(), brush(color, alpha).Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
-void Gfx::text_at(float x, float y, std::string_view s, Font font, RGB color) {
+void Gfx::text_fit(const Rect& r, std::string_view s, Font font, RGB color, Align align, float alpha) {
+    if (s.empty()) return;
+    // zapas na zaokraglenie prostokata do pikseli - bez niego napis mierzony
+    // "na styk" dostawalby wielokropek
+    if (measure(s, font).width <= r.w + 1.5f) {
+        Rect box = r;
+        box.w += 2.0f;
+        if (align == Align::Right) box.x -= 2.0f;
+        else if (align == Align::Center) box.x -= 1.0f;
+        text(box, s, font, color, align, false, alpha);
+        return;
+    }
+    auto l = layout(s, font, r.w, align, false, true);
+    if (!l) return;
+    DWRITE_TEXT_METRICS m{};
+    l->GetMetrics(&m);
+    float y = r.y + std::max(0.0f, (r.h - m.height) / 2);
+    rt_->DrawTextLayout(D2D1::Point2F(r.x, y), l.Get(), brush(color, alpha).Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+void Gfx::text_at(float x, float y, std::string_view s, Font font, RGB color, float alpha) {
     auto size = measure(s, font);
-    text(Rect{x - size.width / 2 - 1, y - size.height / 2, size.width + 2, size.height}, s, font, color, Align::Center);
+    text(Rect{x - size.width / 2 - 1, y - size.height / 2, size.width + 2, size.height}, s, font, color, Align::Center, false, alpha);
 }
 
 D2D1_SIZE_F Gfx::measure(std::string_view s, Font font, float max_w) {
@@ -477,6 +533,167 @@ void Gfx::push_clip(const Rect& r) {
 }
 
 void Gfx::pop_clip() { rt_->PopAxisAlignedClip(); }
+
+void Gfx::push_rounded_clip(const Rect& r, float radius) {
+    ComPtr<ID2D1Layer> layer;
+    rt_->CreateLayer(&layer);
+    rt_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), geometry(Shape::rrect(r.x, r.y, r.right(), r.bottom(), radius)).Get()), layer.Get());
+}
+
+void Gfx::pop_rounded_clip() { rt_->PopLayer(); }
+
+void Gfx::begin_opacity(float alpha) {
+    ComPtr<ID2D1Layer> layer;
+    rt_->CreateLayer(&layer);
+    rt_->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(), nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(), alpha), layer.Get());
+}
+
+void Gfx::end_opacity() { rt_->PopLayer(); }
+
+void Gfx::push_translate(float dx, float dy) {
+    D2D1_MATRIX_3X2_F old;
+    rt_->GetTransform(&old);
+    transforms_.push_back(old);
+    rt_->SetTransform(D2D1::Matrix3x2F::Translation(dx, dy) * old);
+}
+
+void Gfx::pop_translate() {
+    rt_->SetTransform(transforms_.back());
+    transforms_.pop_back();
+}
+
+void Gfx::spinner(float cx, float cy, float r, RGB color, double time, float width) {
+    float start = static_cast<float>(std::fmod(time * 360.0, 360.0));
+    stroke_circle(cx, cy, r, color, width, 0.2f);
+    arc(cx, cy, r, start, start + 100.0f, color, width);
+}
+
+ComPtr<ID2D1LinearGradientBrush> Gfx::linear(RGB a, RGB b, float alpha_a, float alpha_b, D2D1_POINT_2F p0, D2D1_POINT_2F p1) {
+    std::string key = std::to_string(a) + "/" + std::to_string(b) + "/" + std::to_string(static_cast<int>(alpha_a * 1000)) + "/" + std::to_string(static_cast<int>(alpha_b * 1000));
+    auto it = gradients_.find(key);
+    if (it == gradients_.end()) {
+        D2D1_GRADIENT_STOP stops[2] = {{0.0f, color_f(a, alpha_a)}, {1.0f, color_f(b, alpha_b)}};
+        ComPtr<ID2D1GradientStopCollection> collection;
+        rt_->CreateGradientStopCollection(stops, 2, &collection);
+        ComPtr<ID2D1LinearGradientBrush> created;
+        rt_->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(p0, p1), collection.Get(), &created);
+        it = gradients_.emplace(std::move(key), std::move(created)).first;
+    }
+    it->second->SetStartPoint(p0);
+    it->second->SetEndPoint(p1);
+    return it->second;
+}
+
+void Gfx::fill_rrect_v(const Rect& r, float radius, RGB top, RGB bottom, float a_top, float a_bottom) {
+    radius = std::min({radius, r.w / 2, r.h / 2});
+    rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.x, r.y, r.right(), r.bottom()), radius, radius),
+                              linear(top, bottom, a_top, a_bottom, D2D1::Point2F(0, r.y), D2D1::Point2F(0, r.bottom())).Get());
+}
+
+void Gfx::fill_rrect_h(const Rect& r, float radius, RGB left, RGB right, float a_left, float a_right) {
+    radius = std::min({radius, r.w / 2, r.h / 2});
+    rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(r.x, r.y, r.right(), r.bottom()), radius, radius),
+                              linear(left, right, a_left, a_right, D2D1::Point2F(r.x, 0), D2D1::Point2F(r.right(), 0)).Get());
+}
+
+void Gfx::fill_poly_v(const std::vector<Pt>& pts, float y0, float y1, RGB top, RGB bottom, float a_top, float a_bottom) {
+    if (pts.size() < 3) return;
+    auto path = polygon_geometry(factory_.Get(), pts, true);
+    rt_->FillGeometry(path.Get(), linear(top, bottom, a_top, a_bottom, D2D1::Point2F(0, y0), D2D1::Point2F(0, y1)).Get());
+}
+
+void Gfx::stroke_rrect_v(const Rect& r, float radius, RGB top, RGB bottom, float a_top, float a_bottom, float width) {
+    float inset = width / 2;
+    D2D1_RECT_F rc = D2D1::RectF(r.x + inset, r.y + inset, r.right() - inset, r.bottom() - inset);
+    float rad = std::max(0.0f, radius - inset);
+    rt_->DrawRoundedRectangle(D2D1::RoundedRect(rc, rad, rad),
+                              linear(top, bottom, a_top, a_bottom, D2D1::Point2F(0, r.y), D2D1::Point2F(0, r.bottom())).Get(), width);
+}
+
+void Gfx::fill_radial(const Rect& clip, float radius, float cx, float cy, float r, RGB inner, RGB outer, float a_inner, float a_outer) {
+    D2D1_GRADIENT_STOP stops[2] = {{0.0f, color_f(inner, a_inner)}, {1.0f, color_f(outer, a_outer)}};
+    ComPtr<ID2D1GradientStopCollection> collection;
+    rt_->CreateGradientStopCollection(stops, 2, &collection);
+    ComPtr<ID2D1RadialGradientBrush> b;
+    rt_->CreateRadialGradientBrush(D2D1::RadialGradientBrushProperties(D2D1::Point2F(cx, cy), D2D1::Point2F(0, 0), r, r), collection.Get(), &b);
+    rt_->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(clip.x, clip.y, clip.right(), clip.bottom()), radius, radius), b.Get());
+}
+
+void Gfx::shadow(const Rect& rc, float radius, float blur, RGB color, float alpha, float dy) {
+    float m = std::ceil(blur * 2.6f);
+    float corner = std::ceil(radius) + m;
+    int size = static_cast<int>(corner) * 2 + 2;
+    const Sprite& s = cached("shadow/" + std::to_string(static_cast<int>(radius * 2)) + "/" + std::to_string(static_cast<int>(blur * 2)) + "/" + std::to_string(color), [&] {
+        std::vector<float> mask;
+        float end = static_cast<float>(size) - m;
+        rasterize(Shape::rrect(m, m, end, end, radius), 0, 0, size, size, mask);
+        int box = std::max(1, static_cast<int>(blur * 3.0f * std::sqrt(2.0f * PI) / 4.0f / 2.0f + 0.5f));
+        for (int i = 0; i < 3; ++i) box_blur(mask, size, size, box);
+        std::vector<uint32_t> pixels(mask.size());
+        uint32_t cr = (color >> 16) & 0xFF, cg = (color >> 8) & 0xFF, cb = color & 0xFF;
+        for (size_t i = 0; i < mask.size(); ++i) {
+            float a = std::min(1.0f, mask[i]);
+            pixels[i] = (static_cast<uint32_t>(a * 255.0f + 0.5f) << 24) | (static_cast<uint32_t>(static_cast<float>(cr) * a) << 16) |
+                        (static_cast<uint32_t>(static_cast<float>(cg) * a) << 8) | static_cast<uint32_t>(static_cast<float>(cb) * a);
+        }
+        Sprite out;
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+        rt_->CreateBitmap(D2D1::SizeU(static_cast<UINT32>(size), static_cast<UINT32>(size)), pixels.data(), static_cast<UINT32>(size) * 4, props, &out.bitmap);
+        out.w = out.h = static_cast<float>(size);
+        return out;
+    });
+    if (!s) return;
+
+    float fsize = static_cast<float>(size);
+    float xs[4] = {rc.x - m, rc.x - m + corner, rc.right() + m - corner, rc.right() + m};
+    float ys[4] = {rc.y - m + dy, rc.y - m + corner + dy, rc.bottom() + m - corner + dy, rc.bottom() + m + dy};
+    float us[4] = {0, corner, fsize - corner, fsize};
+    if (xs[2] < xs[1]) xs[1] = xs[2] = (xs[0] + xs[3]) / 2;
+    if (ys[2] < ys[1]) ys[1] = ys[2] = (ys[0] + ys[3]) / 2;
+    for (int j = 0; j < 3; ++j)
+        for (int i = 0; i < 3; ++i) {
+            if (xs[i + 1] <= xs[i] || ys[j + 1] <= ys[j]) continue;
+            D2D1_RECT_F dst = D2D1::RectF(xs[i], ys[j], xs[i + 1], ys[j + 1]);
+            D2D1_RECT_F src = D2D1::RectF(us[i], us[j], us[i + 1], us[j + 1]);
+            rt_->DrawBitmap(s.bitmap.Get(), dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
+        }
+}
+
+void Gfx::backdrop(float x, float y) {
+    const Sprite& s = cached("backdrop", [&] {
+        // Slaba poswiata na ciemnym tle daje przy 8 bitach widoczne pasy -
+        // losowy szum o amplitudzie jednego stopnia jasnosci je rozbija.
+        const int W = 1900, H = 1200;
+        std::vector<uint32_t> pixels(static_cast<size_t>(W) * H);
+        uint32_t seed = 0x1234567;
+        auto channel = [](RGB c, int shift) { return static_cast<double>((c >> shift) & 0xFF); };
+        for (int py = 0; py < H; ++py)
+            for (int px = 0; px < W; ++px) {
+                double dx = (px - 1150.0) / 820.0, dy = (py + 120.0) / 560.0;
+                double glow = 0.085 * std::exp(-(dx * dx + dy * dy) * 1.9);
+                double vx = (px - 150.0) / 640.0, vy = (py - 1050.0) / 520.0;
+                double violet = 0.030 * std::exp(-(vx * vx + vy * vy) * 1.9);
+                double fade = std::min(1.0, (W - px) / 320.0) * std::min(1.0, (H - py) / 240.0);
+                glow *= fade;
+                violet *= fade;
+                uint32_t pixel = 0xFF000000u;
+                for (int shift : {16, 8, 0}) {
+                    double v = channel(BG, shift) + (channel(ACCENT, shift) - channel(BG, shift)) * glow + (channel(VIOLET, shift) - channel(BG, shift)) * violet;
+                    seed = seed * 1664525u + 1013904223u;
+                    v += static_cast<double>(seed >> 24) / 255.0 - 0.5;
+                    pixel |= static_cast<uint32_t>(std::clamp(static_cast<int>(v + 0.5), 0, 255)) << shift;
+                }
+                pixels[static_cast<size_t>(py) * W + px] = pixel;
+            }
+        Sprite out;
+        D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+        rt_->CreateBitmap(D2D1::SizeU(W, H), pixels.data(), W * 4, props, &out.bitmap);
+        out.w = static_cast<float>(W);
+        out.h = static_cast<float>(H);
+        return out;
+    });
+    draw_sprite(s, x, y);
+}
 
 const Sprite& Gfx::cached(const std::string& key, const std::function<Sprite()>& render) {
     auto it = sprites_.find(key);
