@@ -50,8 +50,8 @@ from .widgets import (OFFLINE_LIVE, BarMeter, ButtonGrid, Card, CurvePlot,
 
 APP_TITLE = "Panel kierownicy"
 VJOY_URL = "https://sourceforge.net/projects/vjoystick/"
-#: Skrypt wgrywania firmware z tego repozytorium (panel/../firmware).
-FIRMWARE_SCRIPT = (Path(__file__).resolve().parents[3] / "firmware"
+#: Skrypt wgrywania firmware z tego repozytorium (panel/python/../../firmware).
+FIRMWARE_SCRIPT = (Path(__file__).resolve().parents[4] / "firmware"
                    / "kierownica" / "wgraj_firmware.bat")
 #: Skrypt startowy panelu - to on trafia do autostartu Windows.
 PANEL_SCRIPT = Path(__file__).resolve().parents[2] / "kierownica.py"
