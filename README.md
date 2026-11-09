@@ -12,7 +12,8 @@ firmware/
   kierownica/     firmware dla Arduino Due (kierownica.ino + g29_usb.h)
                   i skrypt wgraj_firmware.bat
   skrzynia/       prototyp skrzyni biegów H (ArduinoJoystickLibrary, płytki z ATmega32U4)
-panel/            aplikacja na PC (Python + Tkinter) - szczegóły w panel/README.md
+panel/python/     aplikacja na PC (Python + Tkinter) - szczegóły w panel/python/README.md
+panel/cpp/        ta sama aplikacja w C++ (Win32) - szczegóły w panel/cpp/README.md
 ```
 
 ## Jak to działa
@@ -43,14 +44,14 @@ i mapuje, a potem, zależnie od trybu:
    Racing Wheel*.
 4. Zainstaluj [Pythona 3.9+](https://www.python.org/downloads/), potem:
    ```
-   cd panel
+   cd panel/python
    python -m pip install -r requirements.txt
    Kierownica.bat
    ```
 5. W zakładce **G29** przypisz przyciski i kliknij **Zapisz ustawienia**.
 
 Opis zakładek, trybów, sterowników (vJoy, ViGEmBus) i protokołu jest
-w [panel/README.md](panel/README.md).
+w [panel/python/README.md](panel/python/README.md).
 
 ## Podłączenie (Arduino Due)
 
@@ -72,9 +73,9 @@ na tej samej licencji.
 
 ### Fragmenty z innych projektów
 
-* `panel/vigem/ViGEmClient.dll` pochodzi z pakietu
+* `panel/python/vigem/ViGEmClient.dll` pochodzi z pakietu
   [vgamepad](https://pypi.org/project/vgamepad/) (licencja MIT, zgodna
-  z GPL, treść w `panel/vigem/LICENSE-vgamepad.txt`).
+  z GPL, treść w `panel/python/vigem/LICENSE-vgamepad.txt`).
 * Deskryptor raportu G29 w `firmware/kierownica/g29_usb.h` (opis
   oryginalnego urządzenia Logitech G29, potrzebny do zgodności z grami)
   pochodzi z projektu

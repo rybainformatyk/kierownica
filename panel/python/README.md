@@ -57,7 +57,7 @@ składa gotowy raport G29 i odsyła go do płytki, a ta wypycha go przez USB.
 
 1. Wgraj firmware 2.2: przycisk **Wgraj firmware** w Diagnostyce (panel sam
    zwolni port i połączy się ponownie) albo
-   `../firmware/kierownica/wgraj_firmware.bat` przy zamkniętym panelu.
+   `../../firmware/kierownica/wgraj_firmware.bat` przy zamkniętym panelu.
 2. Podłącz **dwa kable**: Programming Port (łącze z panelem) i Native USB
    (kierownica dla gier).
 3. W panelu wybierz tryb **Kierownica G29**. Karta *Kierownica G29* w
@@ -192,8 +192,8 @@ domyślnych — nic nie przepada po cichu.
 
 ## Firmware
 
-W `../firmware/kierownica/kierownica.ino`, moduł G29 w
-`../firmware/kierownica/g29_usb.h`. Wgrywanie: `wgraj_firmware.bat` (używa
+W `../../firmware/kierownica/kierownica.ino`, moduł G29 w
+`../../firmware/kierownica/g29_usb.h`. Wgrywanie: `wgraj_firmware.bat` (używa
 arduino-cli z Arduino IDE 2, sam znajduje port) albo przycisk **Wgraj
 firmware** w Diagnostyce — podaje skryptowi port, na którym panel był
 połączony, więc trafia też w klony Due z innym układem USB. Gdy płytka ma

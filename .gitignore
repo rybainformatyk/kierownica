@@ -7,8 +7,11 @@ venv/
 
 # Ustawienia uzytkownika - aplikacja tworzy je sama przy pierwszym starcie
 # (.tmp to zapis w toku, .bad - kopia pliku, ktorego nie dalo sie odczytac)
-panel/config.json
-panel/config.json.*
+panel/python/config.json
+panel/python/config.json.*
+
+# Wynik kompilacji panelu w C++ (takze jego config.json)
+panel/cpp/bin/
 
 # Stare wersje i proby - tylko lokalnie
 _archiwum/
