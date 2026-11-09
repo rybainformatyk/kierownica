@@ -24,7 +24,7 @@
 namespace wb::ui {
 
 inline constexpr const char* APP_TITLE = "Panel kierownicy";
-inline constexpr const char* APP_VERSION = "2.6";
+inline constexpr const char* APP_VERSION = "3.0";
 
 struct AppOptions {
     bool minimized = false;
