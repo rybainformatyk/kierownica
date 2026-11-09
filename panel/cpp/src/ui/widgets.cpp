@@ -17,7 +17,23 @@ constexpr float PI = std::numbers::pi_v<float>;
 
 float clampf(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
 
+// Cale piksele - linie wlosowe zostaja ostre.
+Rect snapped(const Rect& rc) {
+    float x = std::round(rc.x), y = std::round(rc.y);
+    return {x, y, std::round(rc.right()) - x, std::round(rc.bottom()) - y};
+}
+
 } // namespace
+
+bool Anim::step(float dt, float speed) {
+    if (value == target) return false;
+    value += (target - value) * (1.0f - std::exp(-speed * dt));
+    if (std::abs(target - value) < 0.01f) {
+        value = target;
+        return false;
+    }
+    return true;
+}
 
 void Widget::set_visible(bool v) {
     if (visible != v) {
@@ -26,20 +42,50 @@ void Widget::set_visible(bool v) {
     }
 }
 
+std::string upper_pl(const std::string& s) {
+    std::wstring w = widen(s);
+    if (!w.empty()) CharUpperBuffW(w.data(), static_cast<DWORD>(w.size()));
+    return narrow(w);
+}
+
+// --------------------------------------------------------------------- Ui
+
 Ui& Ui::get() {
     static Ui instance;
     return instance;
 }
 
 void Ui::open_overlay(WidgetPtr overlay) {
-    close_overlay();
-    overlay_ = std::move(overlay);
+    overlay->arrange({0, 0, window.w, window.h});
+    overlays_.push_back(std::move(overlay));
     invalidate();
 }
 
 void Ui::close_overlay() {
-    if (overlay_) trash_.push_back(std::move(overlay_));
+    if (overlays_.empty()) return;
+    trash_.push_back(std::move(overlays_.back()));
+    overlays_.pop_back();
     invalidate();
+}
+
+void Ui::close_all_overlays() {
+    while (!overlays_.empty()) close_overlay();
+}
+
+Widget* Ui::overlay() { return overlays_.empty() ? nullptr : overlays_.back().get(); }
+
+void Ui::arrange_overlays() {
+    for (auto& o : overlays_) o->arrange({0, 0, window.w, window.h});
+}
+
+void Ui::paint_overlays(Gfx& g) {
+    for (auto& o : overlays_) o->paint(g);
+}
+
+bool Ui::in_trash(const Widget* w) const {
+    for (const auto& t : trash_)
+        if (t.get() == w) return true;
+    return false;
 }
 
 void Ui::set_focus(Widget* w) {
@@ -49,6 +95,70 @@ void Ui::set_focus(Widget* w) {
     if (old) old->focus_changed(false);
     if (w) w->focus_changed(true);
     invalidate();
+}
+
+void Ui::toast(std::string text, RGB color, const char* icon) {
+    Toast t{std::move(text), color, icon, time, Anim{}};
+    t.show.set(1.0f);
+    toasts_.push_back(std::move(t));
+    while (toasts_.size() > 4) toasts_.pop_front();
+    invalidate();
+}
+
+void Ui::tick_toasts(double now) {
+    for (auto& t : toasts_)
+        if (now - t.born > 3.6 && t.show.target != 0.0f) {
+            t.show.set(0.0f);
+            invalidate();
+        }
+    while (!toasts_.empty() && toasts_.front().show.target == 0.0f && toasts_.front().show.value <= 0.01f) {
+        toasts_.pop_front();
+        invalidate();
+    }
+}
+
+void Ui::paint_toasts(Gfx& g) {
+    float y = window.h - 18;
+    for (auto it = toasts_.rbegin(); it != toasts_.rend(); ++it) {
+        animate(it->show, 14);
+        float a = it->show.value;
+        if (a <= 0.01f) continue;
+        float tw = g.measure(it->text, Font::Body).width + 1;
+        float w = std::min(window.w - 40, tw + 58);
+        float h = 46;
+        Rect box{window.w - 18 - w + (1 - a) * 26, y - h, w, h};
+        g.begin_opacity(a);
+        g.shadow(box, 12, 12, BLACK, 0.55f, 5);
+        g.fill_rrect(box, 12, PANEL_HI);
+        g.stroke_rrect(box, 12, mix(BORDER_HI, it->color, 0.45));
+        g.fill_circle(box.x + 24, box.y + h / 2, 11, it->color, 0.16f);
+        g.text({box.x + 13, box.y, 22, h}, it->icon, Font::IconSmall, it->color, Align::Center);
+        g.text({box.x + 44, box.y, w - 56, h}, it->text, Font::Body, TEXT);
+        g.end_opacity();
+        y -= (h + 8) * a;
+    }
+}
+
+void Ui::set_tooltip(const std::string* text) {
+    std::string value = text ? *text : std::string();
+    if (value != tooltip_) {
+        tooltip_ = std::move(value);
+        invalidate();
+    }
+}
+
+void Ui::paint_tooltip(Gfx& g) {
+    if (tooltip_.empty()) return;
+    auto s = g.measure(tooltip_, Font::Small, 320);
+    float w = s.width + 20, h = s.height + 12;
+    float x = clampf(mouse.x + 12, 4, window.w - w - 4);
+    float y = mouse.y + 20;
+    if (y + h > window.h - 4) y = mouse.y - h - 10;
+    Rect box{x, y, w, h};
+    g.shadow(box, 8, 8, BLACK, 0.5f, 3);
+    g.fill_rrect(box, 8, ELEV);
+    g.stroke_rrect(box, 8, BORDER_HI);
+    g.text({x + 10, y + 6, s.width + 2, s.height}, tooltip_, Font::Small, TEXT, Align::Left, true);
 }
 
 // -------------------------------------------------------------------- Box
@@ -115,7 +225,7 @@ void Box::arrange(const Rect& rc) {
                 if (it.pack.cross == Pack::Center) y += (avail_h - h) / 2;
                 else if (it.pack.cross == Pack::End) y += avail_h - h;
             }
-            it.w->arrange({x, y, w, h});
+            it.w->arrange(snapped({x, y, w, h}));
             x += w + it.pack.right;
         }
     } else {
@@ -132,7 +242,7 @@ void Box::arrange(const Rect& rc) {
                 if (it.pack.cross == Pack::Center) x += (avail_w - w) / 2;
                 else if (it.pack.cross == Pack::End) x += avail_w - w;
             }
-            it.w->arrange({x, y, w, s.h});
+            it.w->arrange(snapped({x, y, w, s.h}));
             y += s.h + it.pack.bottom;
         }
     }
@@ -160,9 +270,9 @@ std::vector<float> Grid::column_widths(float avail_w) {
     float total_weight = 0;
     for (float w : weights_)
         if (w > 0) total_weight += w;
-
     for (size_t c = 0; c < n; ++c)
         if (weights_[c] < 0) widths[c] = -weights_[c];  // stala szerokosc
+
     for (auto& cell : cells_) {
         if (!cell.w->visible || cell.colspan != 1 || weights_[static_cast<size_t>(cell.col)] != 0) continue;
         float w = cell.w->measure(avail_w).w + cell.pack.left + cell.pack.right;
@@ -222,7 +332,7 @@ void Grid::arrange(const Rect& rc) {
             w = nw;
             h = std::min(h, s.h);
         }
-        cell.w->arrange({x, y, w, h});
+        cell.w->arrange(snapped({x, y, w, h}));
     }
 }
 
@@ -238,50 +348,136 @@ Widget* Grid::hit_test(float x, float y) {
     return nullptr;
 }
 
+// ---------------------------------------------------------------- Columns
+
+int Columns::per_row(float w) const {
+    int count = static_cast<int>(items_.size());
+    for (int n = count; n > 1; --n) {
+        bool fits = true;
+        for (int first = 0; first < count && fits; first += n) {
+            float need = gap_ * static_cast<float>(std::min(n, count - first) - 1);
+            for (int i = first; i < std::min(first + n, count); ++i) {
+                float weight = static_cast<size_t>(i) < weights_.size() ? weights_[static_cast<size_t>(i)] : 1.0f;
+                need += weight < 0 ? -weight : min_col_;
+            }
+            fits = need <= w;
+        }
+        if (fits) return n;
+    }
+    return 1;
+}
+
+std::vector<float> Columns::widths(size_t first, size_t count, float w) const {
+    std::vector<float> out(count, 0.0f);
+    float rest = w - gap_ * static_cast<float>(count - 1);
+    float total = 0;
+    for (size_t i = 0; i < count; ++i) {
+        float weight = first + i < weights_.size() ? weights_[first + i] : 1.0f;
+        if (weight < 0) {
+            out[i] = -weight;
+            rest -= -weight;
+        } else {
+            total += weight;
+        }
+    }
+    for (size_t i = 0; i < count; ++i) {
+        float weight = first + i < weights_.size() ? weights_[first + i] : 1.0f;
+        if (weight >= 0) out[i] = count == 1 ? w : rest * weight / total;
+    }
+    if (count == 1) out[0] = w;
+    return out;
+}
+
+Size Columns::measure(float avail_w) {
+    int n = per_row(avail_w);
+    Size out{avail_w, 0};
+    for (size_t first = 0; first < items_.size(); first += static_cast<size_t>(n)) {
+        size_t count = std::min(static_cast<size_t>(n), items_.size() - first);
+        auto w = widths(first, count, avail_w);
+        float h = 0;
+        for (size_t i = 0; i < count; ++i)
+            if (items_[first + i]->visible) h = std::max(h, items_[first + i]->measure(w[i]).h);
+        out.h += h + (first ? gap_ : 0);
+    }
+    return out;
+}
+
+void Columns::arrange(const Rect& rc) {
+    r = rc;
+    int n = per_row(rc.w);
+    float y = rc.y;
+    for (size_t first = 0; first < items_.size(); first += static_cast<size_t>(n)) {
+        size_t count = std::min(static_cast<size_t>(n), items_.size() - first);
+        auto w = widths(first, count, rc.w);
+        float h = 0;
+        for (size_t i = 0; i < count; ++i)
+            if (items_[first + i]->visible) h = std::max(h, items_[first + i]->measure(w[i]).h);
+        float x = rc.x;
+        for (size_t i = 0; i < count; ++i) {
+            if (items_[first + i]->visible) items_[first + i]->arrange(snapped({x, y, w[i], h}));
+            x += w[i] + gap_;
+        }
+        y += h + gap_;
+    }
+}
+
+void Columns::paint(Gfx& g) {
+    for (auto& w : items_)
+        if (w->visible) w->paint(g);
+}
+
+Widget* Columns::hit_test(float x, float y) {
+    if (!visible || !r.contains(x, y)) return nullptr;
+    for (auto it = items_.rbegin(); it != items_.rend(); ++it)
+        if (Widget* hit = (*it)->hit_test(x, y)) return hit;
+    return nullptr;
+}
+
 // ------------------------------------------------------------------- Card
 
-std::string upper_pl(const std::string& s) {
-    std::wstring w = widen(s);
-    CharUpperBuffW(w.data(), static_cast<DWORD>(w.size()));
-    return narrow(w);
+namespace {
+constexpr float CARD_PX = 20, CARD_PY = 18, CARD_RADIUS = 14;
 }
 
 Card::Card(std::string title, std::string subtitle, float wrap)
-    : title_(upper_pl(title)), body_(std::make_unique<Box>(false)), right_(std::make_unique<Box>(true)) {
+    : title_(std::move(title)), body_(std::make_unique<Box>(false)), right_(std::make_unique<Box>(true)) {
     body = body_.get();
     right_slot = right_.get();
     if (!subtitle.empty())
-        body_->add(std::make_unique<Label>(std::move(subtitle), Font::Small, MUTED, wrap), Pack{.bottom = 8});
+        body_->add(std::make_unique<Label>(std::move(subtitle), Font::Small, MUTED, wrap), Pack{.bottom = 10});
 }
 
 float Card::header_h(float inner_w) {
-    float title = Gfx::get().measure(title_, Font::SmallBold).height;
+    if (title_.empty() && right_->empty()) return 0;
+    float title = title_.empty() ? 0 : Gfx::get().measure(title_, Font::Head).height;
     return std::max(title, right_->measure(inner_w).h);
 }
 
 Size Card::measure(float avail_w) {
-    float inner = std::max(0.0f, avail_w - 32);
-    Size b = body_->measure(inner);
-    return {avail_w, 1 + 12 + header_h(inner) + 10 + 1 + 11 + b.h + 14 + 1};
+    float inner = std::max(0.0f, avail_w - 2 * CARD_PX);
+    float head = header_h(inner);
+    return {avail_w, CARD_PY * 2 + (head > 0 ? head + 14 : 0) + body_->measure(inner).h};
 }
 
 void Card::arrange(const Rect& rc) {
     r = rc;
-    float inner = std::max(0.0f, rc.w - 32);
-    float h = header_h(inner);
+    float inner = std::max(0.0f, rc.w - 2 * CARD_PX);
+    float head = header_h(inner);
     float rw = right_->measure(inner).w;
-    right_->arrange({rc.right() - 16 - rw, rc.y + 13, rw, h});
-    body_->arrange({rc.x + 16, rc.y + 13 + h + 10 + 1 + 11, inner, std::max(0.0f, rc.bottom() - 15 - (rc.y + 13 + h + 22))});
+    right_->arrange(snapped({rc.right() - CARD_PX - rw, rc.y + CARD_PY, rw, head}));
+    float top = rc.y + CARD_PY + (head > 0 ? head + 14 : 0);
+    body_->arrange(snapped({rc.x + CARD_PX, top, inner, std::max(0.0f, rc.bottom() - CARD_PY - top)}));
 }
 
 void Card::paint(Gfx& g) {
-    g.fill_rrect(r, 10, PANEL);
-    g.stroke_rrect(r, 10, BORDER);
-    float inner = std::max(0.0f, r.w - 32);
-    float h = header_h(inner);
-    g.fill_rect({r.x + 16, r.y + 13 + (h - 13) / 2, 3, 13}, ACCENT);
-    g.text({r.x + 28, r.y + 13, inner - 12, h}, title_, Font::SmallBold, TEXT_DIM);
-    g.fill_rect({r.x + 16, r.y + 13 + h + 10, inner, 1}, BORDER);
+    g.fill_rrect_v(r, CARD_RADIUS, 0x161b25, 0x11151c);
+    g.stroke_rrect(r, CARD_RADIUS, BORDER);
+    // cienkie swiatlo na gornej krawedzi - karta lekko uniesiona nad tlem
+    g.stroke_rrect_v(r, CARD_RADIUS, WHITE, WHITE, 0.06f, 0.0f);
+    if (!title_.empty()) {
+        float inner = std::max(0.0f, r.w - 2 * CARD_PX);
+        g.text({r.x + CARD_PX, r.y + CARD_PY, inner, header_h(inner)}, title_, Font::Head, TEXT);
+    }
     right_->paint(g);
     body_->paint(g);
 }
@@ -292,40 +488,85 @@ Widget* Card::hit_test(float x, float y) {
     return body_->hit_test(x, y);
 }
 
-Strip::Strip(std::string title) : title_(std::move(title)), row_(std::make_unique<Box>(true)) { row = row_.get(); }
+// ------------------------------------------------------------- SettingRow
 
-Size Strip::measure(float avail_w) {
-    float inner = std::max(0.0f, avail_w - 32 - 120);
-    return {avail_w, std::max(row_->measure(inner).h, 18.0f) + 20};
+namespace {
+constexpr float ROW_PY = 12;
 }
 
-void Strip::arrange(const Rect& rc) {
+bool SettingRow::stacked(float w) const {
+    // kontrolka bez stalej szerokosci (np. kilka przyciskow) tez musi zostawic miejsce na opis
+    return control_w_ > 0 ? w < control_w_ + 240 : w < control_->measure(w).w + 160;
+}
+
+float SettingRow::control_width(float w) {
+    if (control_w_ > 0) return stacked(w) ? w : control_w_;
+    return std::min(w, control_->measure(w).w);
+}
+
+float SettingRow::text_width(float w) {
+    if (stacked(w)) return w;
+    return std::max(120.0f, w - control_width(w) - 24);
+}
+
+Size SettingRow::measure(float avail_w) {
+    Gfx& g = Gfx::get();
+    float tw = text_width(avail_w);
+    float text_h = g.measure(title_, Font::BodyStrong, tw).height;
+    if (!desc_.empty()) text_h += 2 + g.measure(desc_, Font::Small, tw).height;
+    float control_h = control_->measure(control_width(avail_w)).h;
+    if (stacked(avail_w)) return {avail_w, ROW_PY * 2 + text_h + 8 + control_h};
+    return {avail_w, ROW_PY * 2 + std::max(text_h, control_h)};
+}
+
+void SettingRow::arrange(const Rect& rc) {
     r = rc;
-    float title = Gfx::get().measure(title_, Font::SmallBold).width + 12;
-    row_->arrange({rc.x + 16 + title + 8, rc.y + 10, std::max(0.0f, rc.w - 32 - title - 8), rc.h - 20});
+    Gfx& g = Gfx::get();
+    float cw = control_width(rc.w);
+    float ch = control_->measure(cw).h;
+    if (stacked(rc.w)) {
+        control_->arrange(snapped({rc.x, rc.bottom() - ROW_PY - ch, cw, ch}));
+    } else {
+        float tw = text_width(rc.w);
+        float text_h = g.measure(title_, Font::BodyStrong, tw).height;
+        if (!desc_.empty()) text_h += 2 + g.measure(desc_, Font::Small, tw).height;
+        float rows = std::max(text_h, ch);
+        control_->arrange(snapped({rc.right() - cw, rc.y + ROW_PY + (rows - ch) / 2, cw, ch}));
+    }
 }
 
-void Strip::paint(Gfx& g) {
-    g.fill_rrect(r, 10, PANEL);
-    g.stroke_rrect(r, 10, BORDER);
-    g.fill_rect({r.x + 16, r.y + (r.h - 13) / 2, 3, 13}, ACCENT);
-    g.text({r.x + 28, r.y, 240, r.h}, title_, Font::SmallBold, TEXT_DIM);
-    row_->paint(g);
+void SettingRow::paint(Gfx& g) {
+    if (divider_) g.fill_rect({r.x, r.y, r.w, 1}, BORDER, 0.7f);
+    float tw = text_width(r.w);
+    float title_h = g.measure(title_, Font::BodyStrong, tw).height;
+    float y = r.y + ROW_PY;
+    if (!stacked(r.w)) {
+        float text_h = title_h;
+        if (!desc_.empty()) text_h += 2 + g.measure(desc_, Font::Small, tw).height;
+        float avail = r.h - 2 * ROW_PY;
+        y += std::max(0.0f, (avail - text_h) / 2);
+    }
+    g.text({r.x, y, tw, title_h}, title_, Font::BodyStrong, TEXT, Align::Left, true);
+    if (!desc_.empty()) {
+        float desc_h = g.measure(desc_, Font::Small, tw).height;
+        g.text({r.x, y + title_h + 2, tw, desc_h}, desc_, Font::Small, MUTED, Align::Left, true);
+    }
+    control_->paint(g);
 }
 
-Widget* Strip::hit_test(float x, float y) {
+Widget* SettingRow::hit_test(float x, float y) {
     if (!visible || !r.contains(x, y)) return nullptr;
-    return row_->hit_test(x, y);
+    return control_->hit_test(x, y);
 }
 
 // ----------------------------------------------------------------- Scroll
 
 void Scroll::arrange(const Rect& rc) {
     r = rc;
-    float w = std::max(1.0f, rc.w - GUTTER);
-    content_h_ = content_->measure(w).h;
+    float w = std::max(1.0f, rc.w - 2 * pad_x_);
+    content_h_ = content_->measure(w).h + 2 * pad_y_;
     offset_ = clampf(offset_, 0, std::max(0.0f, content_h_ - rc.h));
-    content_->arrange({rc.x, rc.y - offset_, w, content_h_});
+    content_->arrange(snapped({rc.x + pad_x_, rc.y + pad_y_ - offset_, w, content_h_ - 2 * pad_y_}));
 }
 
 void Scroll::set_offset(float offset) {
@@ -349,38 +590,34 @@ bool Scroll::mouse_wheel(int delta) {
 }
 
 Rect Scroll::thumb() const {
-    float h = std::max(24.0f, r.h * r.h / content_h_);
-    float span = r.h - h;
+    float h = std::max(32.0f, r.h * r.h / content_h_);
+    float span = r.h - h - 8;
     float max_off = content_h_ - r.h;
-    float y = r.y + (max_off > 0 ? span * offset_ / max_off : 0);
-    return {r.right() - BAR_W - 1, y, BAR_W, h};
+    float y = r.y + 4 + (max_off > 0 ? span * offset_ / max_off : 0);
+    return {r.right() - BAR_W - 3, y, BAR_W, h};
 }
 
 void Scroll::paint(Gfx& g) {
     g.push_clip(r);
     content_->paint(g);
     g.pop_clip();
-    if (content_h_ > r.h) {
-        Rect t = thumb();
-        RGB color = dragging_ ? ACCENT_DIM : ELEV;
-        g.fill_rrect(t, 4, color);
-    }
+    if (content_h_ > r.h) g.fill_rrect(thumb(), 3, dragging_ ? ACCENT_DIM : BORDER_HI, dragging_ ? 1.0f : 0.8f);
 }
 
 Widget* Scroll::hit_test(float x, float y) {
     if (!visible || !r.contains(x, y)) return nullptr;
-    if (content_h_ > r.h && x >= r.right() - BAR_W - 2) return this;
+    if (content_h_ > r.h && x >= r.right() - BAR_W - 6) return this;
     if (Widget* hit = content_->hit_test(x, y)) return hit;
     return this;
 }
 
 void Scroll::mouse_down(float x, float y) {
-    if (content_h_ <= r.h || x < r.right() - BAR_W - 2) return;
+    if (content_h_ <= r.h || x < r.right() - BAR_W - 6) return;
     Rect t = thumb();
     if (!t.contains(x, y)) {
         // klik w rowek przenosi uchwyt pod kursor
-        float span = r.h - t.h;
-        if (span > 0) set_offset((y - r.y - t.h / 2) / span * (content_h_ - r.h));
+        float span = r.h - t.h - 8;
+        if (span > 0) set_offset((y - r.y - 4 - t.h / 2) / span * (content_h_ - r.h));
     }
     dragging_ = true;
     drag_y_ = y;
@@ -390,7 +627,7 @@ void Scroll::mouse_down(float x, float y) {
 
 void Scroll::mouse_move(float, float y) {
     if (!dragging_) return;
-    float span = r.h - thumb().h;
+    float span = r.h - thumb().h - 8;
     if (span > 0) set_offset(drag_offset_ + (y - drag_y_) / span * (content_h_ - r.h));
 }
 
@@ -410,6 +647,8 @@ void Pages::select(int index) {
     if (index < 0 || index >= static_cast<int>(pages_.size()) || index == current_) return;
     current_ = index;
     Ui::get().set_focus(nullptr);
+    show_.snap(0.0f);
+    show_.set(1.0f);
     relayout();
     if (on_changed) on_changed(index);
 }
@@ -419,7 +658,20 @@ void Pages::arrange(const Rect& rc) {
     pages_[static_cast<size_t>(current_)]->arrange(rc);
 }
 
-void Pages::paint(Gfx& g) { pages_[static_cast<size_t>(current_)]->paint(g); }
+void Pages::paint(Gfx& g) {
+    animate(show_, 16);
+    auto& page = *pages_[static_cast<size_t>(current_)];
+    float t = show_.value;
+    if (t >= 0.995f) {
+        page.paint(g);
+        return;
+    }
+    g.begin_opacity(t);
+    g.push_translate(0, (1.0f - t) * 12.0f);
+    page.paint(g);
+    g.pop_translate();
+    g.end_opacity();
+}
 
 Widget* Pages::hit_test(float x, float y) { return pages_[static_cast<size_t>(current_)]->hit_test(x, y); }
 
@@ -485,40 +737,58 @@ void Button::set_enabled(bool e) {
 
 Size Button::measure(float) {
     bool compact = style_ == Small || style_ == Ghost;
-    Font font = style_ == Accent ? Font::Bold : (compact ? Font::Small : Font::Base);
-    auto s = Gfx::get().measure(text_, font);
-    float px = compact ? 11.0f : 14.0f, py = compact ? 5.0f : 8.0f;
-    return {width_ > 0 ? width_ : s.width + 2 * px + 2, s.height + 2 * py + 2};
+    auto s = Gfx::get().measure(text_, compact ? Font::SmallStrong : Font::BodyStrong);
+    float px = compact ? 12.0f : 16.0f;
+    float icon_w = icon_ ? 21.0f : 0.0f;
+    return {width_ > 0 ? width_ : s.width + 2 * px + icon_w + 2, compact ? 30.0f : 36.0f};
 }
 
 void Button::paint(Gfx& g) {
-    RGB fill = PANEL_HI, edge = BORDER, fg = TEXT;
-    Font font = Font::Base;
+    hover_anim_.set(hover_ && enabled_ ? 1.0f : 0.0f);
+    animate(hover_anim_, 22);
+    float h = hover_anim_.value;
+    bool down = pressed_ && hover_ && enabled_;
+    bool compact = style_ == Small || style_ == Ghost;
+    const float radius = 9;
+    RGB fg = TEXT;
     switch (style_) {
-    case Normal:
-    case Small:
-        font = style_ == Small ? Font::Small : Font::Base;
-        if (!enabled_) { fill = PANEL; edge = BORDER; fg = MUTED; }
-        else if (pressed_ && hover_) { fill = ACCENT_DEEP; edge = ACCENT_DIM; }
-        else if (hover_) { fill = ELEV; edge = BORDER_HI; }
-        break;
-    case Accent:
-        font = Font::Bold;
-        fg = ACCENT_INK;
-        fill = edge = ACCENT;
-        if (!enabled_) { fill = edge = ACCENT_DIM; fg = 0x4d6678; }
-        else if (pressed_ && hover_) fill = edge = 0x2f9fd8;
-        else if (hover_) fill = edge = 0x6ccfff;
-        break;
-    case Ghost:
-        font = Font::Small;
-        fill = PANEL; fg = TEXT_DIM;
-        if (hover_ || pressed_) { fill = PANEL_HI; edge = BORDER_HI; fg = TEXT; }
+    case Accent: {
+        RGB fill = enabled_ ? (down ? 0x2f9fd8 : mix(ACCENT, ACCENT_HI, h)) : ACCENT_DIM;
+        fg = enabled_ ? ACCENT_INK : 0x4d6678;
+        if (enabled_ && h > 0.01f) g.shadow(r, radius, 9, ACCENT, 0.30f * h, 2);
+        g.fill_rrect_v(r, radius, lighten(fill, 0.07), fill);
         break;
     }
-    g.fill_rrect(r, 7, edge);
-    g.fill_rrect({r.x + 1, r.y + 1, r.w - 2, r.h - 2}, 6, fill);
-    g.text(r, text_, font, fg, Align::Center);
+    case Normal:
+    case Small: {
+        RGB fill = mix(PANEL_HI, ELEV, h), edge = mix(BORDER, BORDER_HI, h);
+        if (down) { fill = ACCENT_DEEP; edge = ACCENT_DIM; }
+        if (!enabled_) { fill = PANEL; edge = BORDER; fg = MUTED; }
+        g.fill_rrect(r, radius, fill);
+        g.stroke_rrect(r, radius, edge);
+        break;
+    }
+    case Ghost:
+        if (h > 0.01f) g.fill_rrect(r, radius, ELEV, h);
+        fg = mix(TEXT_DIM, TEXT, h);
+        break;
+    case Danger: {
+        RGB fill = mix(0x3a2028, 0x4a2a31, h);
+        g.fill_rrect(r, radius, fill);
+        g.stroke_rrect(r, radius, 0x5a3039);
+        fg = BAD;
+        break;
+    }
+    }
+    Font font = compact ? Font::SmallStrong : Font::BodyStrong;
+    if (icon_) {
+        float tw = g.measure(text_, font).width + 1;
+        float x = r.x + (r.w - tw - 21) / 2;
+        g.text({x, r.y, 16, r.h}, icon_, Font::IconSmall, fg, Align::Center);
+        g.text({x + 21, r.y, tw + 1, r.h}, text_, font, fg);
+    } else {
+        g.text(r, text_, font, fg, Align::Center);
+    }
 }
 
 void Button::mouse_up(float x, float y) {
@@ -528,39 +798,121 @@ void Button::mouse_up(float x, float y) {
     if (click && command_) command_();
 }
 
-// --------------------------------------------------------------- Checkbox
+void IconButton::paint(Gfx& g) {
+    hover_anim_.set(hover_ ? 1.0f : 0.0f);
+    animate(hover_anim_, 22);
+    float h = hover_anim_.value;
+    if (h > 0.01f) g.fill_rrect(r, 9, ELEV, h);
+    g.text(r, icon_, Font::IconSmall, mix(TEXT_DIM, TEXT, h), Align::Center);
+}
 
-Checkbox::Checkbox(std::string text, bool value, std::function<void(bool)> command, Font font)
-    : text_(std::move(text)), value_(value), command_(std::move(command)), font_(font) {}
+void IconButton::mouse_up(float x, float y) {
+    if (r.contains(x, y) && command_) command_();
+}
 
-void Checkbox::set(bool v) {
+// ----------------------------------------------------------------- Toggle
+
+Toggle::Toggle(bool value, std::function<void(bool)> command)
+    : value_(value), command_(std::move(command)), pos_(value ? 1.0f : 0.0f) {}
+
+void Toggle::set(bool v) {
     if (value_ != v) {
         value_ = v;
         invalidate();
     }
 }
 
-Size Checkbox::measure(float) {
-    auto s = Gfx::get().measure(text_, font_);
-    return {16 + 8 + s.width + 6, std::max(16.0f, s.height) + 8};
+void Toggle::paint(Gfx& g) {
+    pos_.set(value_ ? 1.0f : 0.0f);
+    hover_anim_.set(hover_ ? 1.0f : 0.0f);
+    animate(pos_, 20);
+    animate(hover_anim_, 22);
+    float p = pos_.value, h = hover_anim_.value;
+    Rect t{r.x, r.y + (r.h - 24) / 2, 42, 24};
+    RGB off = mix(TRACK, ELEV, h);
+    g.fill_rrect(t, 12, mix(off, mix(ACCENT, ACCENT_HI, h), p));
+    if (p < 0.99f) g.stroke_rrect(t, 12, BORDER_HI, 1.0f, 1.0f - p);
+    float x = t.x + 12 + p * 18, cy = t.y + 12;
+    g.fill_circle(x, cy + 0.5f, 9.5f, BLACK, 0.25f);
+    g.fill_circle(x, cy, 9, mix(TEXT_DIM, WHITE, std::max(p, h)));
 }
 
-void Checkbox::paint(Gfx& g) {
-    Rect box{r.x + 2, r.y + (r.h - 16) / 2, 16, 16};
-    RGB fill = PANEL_HI, edge = BORDER;
-    if (value_) fill = edge = hover_ ? 0x6ccfff : ACCENT;
-    else if (hover_) { fill = ELEV; edge = BORDER_HI; }
-    g.fill_rrect(box, 4.5f, edge);
-    g.fill_rrect({box.x + 1, box.y + 1, 14, 14}, 3.5f, fill);
-    if (value_) g.polyline({{box.x + 4.2f, box.y + 8.3f}, {box.x + 6.9f, box.y + 11.0f}, {box.x + 11.9f, box.y + 5.3f}}, ACCENT_INK, 2.0f);
-    g.text({r.x + 26, r.y, r.w - 26, r.h}, text_, font_, (hover_ || value_) ? TEXT : TEXT_DIM);
-}
-
-void Checkbox::mouse_up(float x, float y) {
+void Toggle::mouse_up(float x, float y) {
     if (!r.contains(x, y)) return;
     value_ = !value_;
     invalidate();
     if (command_) command_(value_);
+}
+
+// -------------------------------------------------------------- Segmented
+
+Segmented::Segmented(std::vector<std::string> items, int index, std::function<void(int)> on_change, float height)
+    : items_(std::move(items)), index_(index), on_change_(std::move(on_change)), height_(height) {}
+
+void Segmented::set_index(int index) {
+    if (index_ != index) {
+        index_ = index;
+        invalidate();
+    }
+}
+
+float Segmented::item_w() const { return (r.w - 4) / static_cast<float>(items_.size()); }
+
+Size Segmented::measure(float avail_w) {
+    Gfx& g = Gfx::get();
+    float widest = 0;
+    for (const auto& s : items_) widest = std::max(widest, g.measure(s, Font::SmallStrong).width);
+    float w = (widest + 20) * static_cast<float>(items_.size()) + 4;
+    return {avail_w > 0 ? std::min(w, avail_w) : w, height_};
+}
+
+int Segmented::item_at(float x) const {
+    int i = static_cast<int>((x - r.x - 2) / item_w());
+    return (i >= 0 && i < static_cast<int>(items_.size())) ? i : -1;
+}
+
+void Segmented::paint(Gfx& g) {
+    g.fill_rrect(r, 10, PANEL_HI);
+    g.stroke_rrect(r, 10, BORDER);
+    float w = item_w();
+    if (!placed_ && index_ >= 0) {
+        pos_.snap(static_cast<float>(index_));
+        placed_ = true;
+    }
+    if (index_ >= 0) {
+        pos_.set(static_cast<float>(index_));
+        animate(pos_, 20);
+        Rect sel{r.x + 2 + pos_.value * w, r.y + 2, w, r.h - 4};
+        g.fill_rrect_v(sel, 8, ACCENT_HI, ACCENT);
+    }
+    for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
+        Rect cell{r.x + 2 + static_cast<float>(i) * w, r.y + 2, w, r.h - 4};
+        bool sel = i == index_;
+        if (!sel && i == hover_) g.fill_rrect(cell.inset(1), 7, ELEV);
+        g.text(cell, items_[static_cast<size_t>(i)], Font::SmallStrong, sel ? ACCENT_INK : (i == hover_ ? TEXT : TEXT_DIM), Align::Center);
+    }
+}
+
+void Segmented::mouse_move(float x, float) {
+    int i = item_at(x);
+    if (i != hover_) {
+        hover_ = i;
+        invalidate();
+    }
+}
+
+void Segmented::mouse_leave() {
+    hover_ = -1;
+    invalidate();
+}
+
+void Segmented::mouse_down(float x, float) {
+    int i = item_at(x);
+    if (i >= 0 && i != index_) {
+        index_ = i;
+        invalidate();
+        if (on_change_) on_change_(i);
+    }
 }
 
 // ------------------------------------------------------------------ Combo
@@ -570,45 +922,56 @@ namespace {
 // Rozwinieta lista - nakladka na okno, klik obok ja zamyka.
 class ComboList final : public Widget {
 public:
-    static constexpr float ROW = 24;
-    static constexpr int MAX_ROWS = 14;
+    static constexpr float ROW = 30;
+    static constexpr int MAX_ROWS = 12;
 
-    ComboList(Rect anchor, std::vector<std::string> items, int index, std::function<void(int)> pick)
+    ComboList(const Rect& anchor, std::vector<std::string> items, int index, std::function<void(int)> pick)
         : items_(std::move(items)), selected_(index), pick_(std::move(pick)) {
+        Gfx& g = Gfx::get();
+        float width = anchor.w;
+        for (const auto& s : items_) width = std::max(width, g.measure(s, Font::Body).width + 44);
         int shown = std::min(static_cast<int>(items_.size()), MAX_ROWS);
-        float h = static_cast<float>(shown) * ROW + 2;
+        float h = static_cast<float>(shown) * ROW + 10;
         Size win = Ui::get().window;
-        float y = anchor.bottom() + 2;
-        if (y + h > win.h - 4) y = std::max(4.0f, anchor.y - h - 2);
-        r_list_ = {anchor.x, y, anchor.w, h};
-        r = {0, 0, win.w, win.h};
+        width = std::min(width, win.w - 16);
+        float x = clampf(anchor.x, 8, win.w - width - 8);
+        float y = anchor.bottom() + 4;
+        if (y + h > win.h - 6) y = std::max(6.0f, anchor.y - h - 4);
+        box_ = {x, y, width, h};
         // od razu widac biezacy wybor
         first_ = std::clamp(index - shown / 2, 0, std::max(0, static_cast<int>(items_.size()) - shown));
         hover_ = index;
+        show_.set(1.0f);
     }
 
     Size measure(float) override { return Ui::get().window; }
     Widget* hit_test(float, float) override { return this; }
 
     void paint(Gfx& g) override {
-        g.fill_rrect(r_list_, 6, BORDER_HI);
-        Rect in{r_list_.x + 1, r_list_.y + 1, r_list_.w - 2, r_list_.h - 2};
-        g.fill_rrect(in, 5, PANEL_HI);
+        animate(show_, 26);
+        float a = show_.value;
+        g.begin_opacity(a);
+        g.shadow(box_, 10, 14, BLACK, 0.6f, 6);
+        g.fill_rrect(box_, 10, 0x1f2631);
+        g.stroke_rrect(box_, 10, BORDER_HI);
+        Rect in = box_.inset(5);
         g.push_clip(in);
         int shown = static_cast<int>(in.h / ROW);
         for (int i = 0; i < shown && first_ + i < static_cast<int>(items_.size()); ++i) {
             int idx = first_ + i;
             Rect row{in.x, in.y + static_cast<float>(i) * ROW, in.w, ROW};
-            bool sel = idx == hover_;
-            if (sel) g.fill_rect(row, ACCENT);
-            g.text({row.x + 8, row.y, row.w - 16, row.h}, items_[static_cast<size_t>(idx)], Font::Base, sel ? ACCENT_INK : TEXT);
+            bool hot = idx == hover_;
+            if (hot) g.fill_rrect(row, 7, ELEV);
+            if (idx == selected_) g.text({row.x + 6, row.y, 18, ROW}, ic::check, Font::IconSmall, ACCENT, Align::Center);
+            g.text_fit({row.x + 28, row.y, row.w - 36, ROW}, items_[static_cast<size_t>(idx)], idx == selected_ ? Font::BodyStrong : Font::Body, hot || idx == selected_ ? TEXT : TEXT_DIM);
         }
         g.pop_clip();
         if (static_cast<int>(items_.size()) > shown) {
             float frac = static_cast<float>(shown) / static_cast<float>(items_.size());
             float top = static_cast<float>(first_) / static_cast<float>(items_.size());
-            g.fill_rrect({in.right() - 5, in.y + top * in.h, 4, std::max(16.0f, frac * in.h)}, 2, ELEV);
+            g.fill_rrect({box_.right() - 7, in.y + top * in.h, 3, std::max(18.0f, frac * in.h)}, 1.5f, BORDER_HI);
         }
+        g.end_opacity();
     }
 
     void mouse_move(float x, float y) override {
@@ -620,7 +983,7 @@ public:
     }
 
     void mouse_down(float x, float y) override {
-        if (!r_list_.contains(x, y)) {
+        if (!box_.contains(x, y)) {
             Ui::get().close_overlay();
             return;
         }
@@ -644,8 +1007,24 @@ public:
     }
 
     bool key_down(unsigned vk) override {
+        int count = static_cast<int>(items_.size());
+        int shown = std::min(count, MAX_ROWS);
         if (vk == VK_ESCAPE) {
             Ui::get().close_overlay();
+            return true;
+        }
+        if (vk == VK_UP || vk == VK_DOWN) {
+            hover_ = std::clamp(hover_ + (vk == VK_UP ? -1 : 1), 0, count - 1);
+            if (hover_ < first_) first_ = hover_;
+            if (hover_ >= first_ + shown) first_ = hover_ - shown + 1;
+            invalidate();
+            return true;
+        }
+        if (vk == VK_RETURN && hover_ >= 0) {
+            auto pick = pick_;
+            int i = hover_;
+            Ui::get().close_overlay();
+            if (pick) pick(i);
             return true;
         }
         return false;
@@ -655,18 +1034,20 @@ public:
 
 private:
     int row_at(float x, float y) const {
-        if (!r_list_.contains(x, y)) return -1;
-        int i = first_ + static_cast<int>((y - r_list_.y - 1) / ROW);
+        Rect in = box_.inset(5);
+        if (!in.contains(x, y)) return -1;
+        int i = first_ + static_cast<int>((y - in.y) / ROW);
         return i < static_cast<int>(items_.size()) ? i : -1;
     }
 
-    Rect r_list_;
+    Rect box_;
     std::vector<std::string> items_;
     int selected_;
     int hover_ = -1;
     int first_ = 0;
     bool pressed_inside_ = false;
     std::function<void(int)> pick_;
+    Anim show_;
 };
 
 } // namespace
@@ -693,16 +1074,18 @@ const std::string& Combo::text() const {
 }
 
 Size Combo::measure(float avail_w) {
-    float w = static_cast<float>(width_chars_) * 7.2f + 16 + 22;
-    return {std::min(w, std::max(avail_w, 60.0f)), Gfx::get().measure("Ag", Font::Base).height + 14};
+    float w = static_cast<float>(width_chars_) * 7.4f + 18 + 26;
+    return {avail_w > 0 ? std::min(w, std::max(avail_w, 60.0f)) : w, 36};
 }
 
 void Combo::paint(Gfx& g) {
-    g.fill_rrect(r, 6, hover_ ? BORDER_HI : BORDER);
-    g.fill_rrect({r.x + 1, r.y + 1, r.w - 2, r.h - 2}, 5, hover_ ? ELEV : PANEL_HI);
-    g.text({r.x + 9, r.y, r.w - 9 - 22, r.h}, text(), Font::Base, TEXT);
-    float cx = r.right() - 13, cy = r.y + r.h / 2;
-    g.polyline({{cx - 4, cy - 2}, {cx, cy + 2}, {cx + 4, cy - 2}}, hover_ ? TEXT : TEXT_DIM, 1.8f);
+    hover_anim_.set(hover_ ? 1.0f : 0.0f);
+    animate(hover_anim_, 22);
+    float h = hover_anim_.value;
+    g.fill_rrect(r, 9, mix(PANEL_HI, ELEV, h));
+    g.stroke_rrect(r, 9, mix(BORDER, BORDER_HI, h));
+    g.text_fit({r.x + 12, r.y, r.w - 12 - 28, r.h}, text(), Font::Body, TEXT);
+    g.text({r.right() - 28, r.y, 22, r.h}, ic::chevron_down, Font::IconSmall, mix(MUTED, TEXT, h), Align::Center);
 }
 
 void Combo::mouse_down(float, float) {
@@ -724,19 +1107,17 @@ void Entry::set(const std::string& text) {
     }
 }
 
-Size Entry::measure(float) {
-    return {static_cast<float>(width_chars_) * 7.2f + 18, Gfx::get().measure("Ag", Font::Base).height + 14};
-}
+Size Entry::measure(float) { return {static_cast<float>(width_chars_) * 7.4f + 22, 36}; }
 
 void Entry::paint(Gfx& g) {
     bool focus = Ui::get().focus() == this;
-    g.fill_rrect(r, 6, focus ? ACCENT : BORDER);
-    g.fill_rrect({r.x + 1, r.y + 1, r.w - 2, r.h - 2}, 5, PANEL_HI);
-    g.text({r.x + 9, r.y, r.w - 18, r.h}, text_, Font::Base, TEXT);
+    g.fill_rrect(r, 9, PANEL_HI);
+    g.stroke_rrect(r, 9, focus ? ACCENT : BORDER);
+    g.text({r.x + 11, r.y, r.w - 22, r.h}, text_, Font::Num, TEXT);
     if (focus) {
         caret_ = std::min(caret_, text_.size());
-        float x = r.x + 9 + (caret_ ? g.measure(text_.substr(0, caret_), Font::Base).width : 0);
-        g.line(x, r.y + 6, x, r.bottom() - 6, TEXT, 1.2f);
+        float x = r.x + 11 + (caret_ ? g.measure(text_.substr(0, caret_), Font::Num).width : 0);
+        g.line(x, r.y + 8, x, r.bottom() - 8, ACCENT, 1.4f);
     }
 }
 
@@ -774,55 +1155,119 @@ void Entry::char_input(wchar_t c) {
     invalidate();
 }
 
-// -------------------------------------------------------------- wskazniki
+// ---------------------------------------------------------------- Stepper
 
-void StatusDot::set(RGB color, bool glow) {
-    if (color_ != color || glow_ != glow) {
-        color_ = color;
-        glow_ = glow;
+Stepper::Stepper(int min_value, int max_value, int value, std::function<void(int)> command, std::string zero_text)
+    : min_(min_value), max_(max_value), value_(value), command_(std::move(command)), zero_text_(std::move(zero_text)) {}
+
+void Stepper::set(int v) {
+    if (value_ != v) {
+        value_ = v;
         invalidate();
     }
 }
 
-void StatusDot::paint(Gfx& g) {
-    float cx = r.x + size_ / 2, cy = r.y + size_ / 2;
-    float pad = std::max(2.0f, std::floor(size_ / 5));
-    float rad = size_ / 2 - pad;
-    if (glow_) {
-        g.fill_circle(cx, cy, size_ / 2, mix(bg_, color_, 0.22));
-        g.fill_circle(cx, cy, rad + 1, mix(bg_, color_, 0.45));
-    }
-    g.fill_circle(cx, cy, rad, color_);
+int Stepper::zone(float x) const {
+    if (x < r.x + 36) return -1;
+    if (x >= r.right() - 36) return 1;
+    return 0;
 }
 
-void StatRow::set(const std::string& value) {
-    if (value_ != value) {
-        value_ = value;
+void Stepper::paint(Gfx& g) {
+    g.fill_rrect(r, 9, PANEL_HI);
+    g.stroke_rrect(r, 9, BORDER);
+    Rect minus{r.x + 2, r.y + 2, 32, r.h - 4}, plus{r.right() - 34, r.y + 2, 32, r.h - 4};
+    if (hover_ < 0) g.fill_rrect(minus, 7, ELEV);
+    if (hover_ > 0) g.fill_rrect(plus, 7, ELEV);
+    g.text(minus, ic::remove, Font::IconSmall, value_ > min_ ? TEXT_DIM : BORDER_HI, Align::Center);
+    g.text(plus, ic::add, Font::IconSmall, value_ < max_ ? TEXT_DIM : BORDER_HI, Align::Center);
+    bool zero = value_ == 0 && !zero_text_.empty();
+    g.text({r.x + 34, r.y, r.w - 68, r.h}, zero ? zero_text_ : std::to_string(value_), zero ? Font::Small : Font::Num, zero ? MUTED : TEXT, Align::Center);
+}
+
+void Stepper::mouse_move(float x, float) {
+    int z = zone(x);
+    if (z != hover_) {
+        hover_ = z;
         invalidate();
     }
 }
 
-void StatRow::set(const std::string& value, RGB color) {
-    set(value);
+void Stepper::mouse_leave() {
+    hover_ = 0;
+    invalidate();
+}
+
+void Stepper::mouse_down(float x, float) {
+    int z = zone(x);
+    if (!z) return;
+    int v = std::clamp(value_ + z, min_, max_);
+    if (v != value_) {
+        value_ = v;
+        invalidate();
+        if (command_) command_(v);
+    }
+}
+
+// ------------------------------------------------------------------- Chip
+
+Chip::Chip(std::string text, RGB color, std::function<void()> command, bool chevron)
+    : text_(std::move(text)), color_(color), command_(std::move(command)), chevron_(chevron) {}
+
+void Chip::set(const std::string& text, RGB color) {
+    if (text_ != text) {
+        text_ = text;
+        relayout();
+    }
     if (color_ != color) {
         color_ = color;
         invalidate();
     }
 }
 
-Size StatRow::measure(float avail_w) { return {avail_w, Gfx::get().measure("Ag", Font::Small).height + 3}; }
+void Chip::set_spinner(bool on) {
+    if (spinner_ != on) {
+        spinner_ = on;
+        invalidate();
+    }
+}
 
-void StatRow::paint(Gfx& g) {
-    g.text({r.x, r.y, r.w, r.h}, label_, Font::Small, MUTED);
-    g.text({r.x, r.y, r.w, r.h}, value_, Font::MonoBold, color_, Align::Right);
+Size Chip::measure(float) {
+    auto s = Gfx::get().measure(text_, Font::SmallStrong);
+    return {s.width + 12 + 18 + (chevron_ ? 26.0f : 12.0f), 36};
+}
+
+void Chip::paint(Gfx& g) {
+    hover_anim_.set(hover_ ? 1.0f : 0.0f);
+    animate(hover_anim_, 22);
+    float h = hover_anim_.value;
+    g.fill_rrect(r, 18, mix(PANEL_HI, ELEV, h));
+    g.stroke_rrect(r, 18, mix(mix(BORDER, color_, 0.25), BORDER_HI, h));
+    float cy = r.y + r.h / 2;
+    if (spinner_) {
+        g.spinner(r.x + 16, cy, 5, color_, Ui::get().time);
+        invalidate();
+    } else {
+        g.fill_circle(r.x + 16, cy, 7, color_, 0.2f);
+        g.fill_circle(r.x + 16, cy, 3.5f, color_);
+    }
+    float right = chevron_ ? 28.0f : 12.0f;
+    g.text_fit({r.x + 28, r.y, r.w - 28 - right, r.h}, text_, Font::SmallStrong, TEXT);
+    if (chevron_) g.text({r.right() - 24, r.y, 18, r.h}, ic::chevron_down, Font::IconSmall, MUTED, Align::Center);
+}
+
+void Chip::mouse_up(float x, float y) {
+    if (r.contains(x, y) && command_) command_();
 }
 
 // ----------------------------------------------------------------- Slider
 
-Slider::Slider(std::string label, double from, double to, double value, Format fmt, double resolution,
-               std::function<void(double)> command, std::string hint)
-    : label_(std::move(label)), hint_(std::move(hint)), from_(from), to_(to), value_(value), resolution_(resolution),
-      fmt_(std::move(fmt)), command_(std::move(command)) {}
+namespace {
+constexpr float BUBBLE_W = 62, RESET_W = 24;
+}
+
+Slider::Slider(double from, double to, double value, Unit unit, double resolution, std::function<void(double)> command, std::optional<double> default_value)
+    : from_(from), to_(to), value_(value), resolution_(resolution), unit_(unit), command_(std::move(command)), default_(default_value) {}
 
 double Slider::snap(double v) const {
     double lo = std::min(from_, to_), hi = std::max(from_, to_);
@@ -850,61 +1295,90 @@ void Slider::apply(double value) {
     if (command_) command_(value);
 }
 
-Rect Slider::track_rect() const {
-    float head = Gfx::get().measure("Ag", Font::SmallBold).height + 4;
-    return {r.x, r.y + head + 4, r.w, 22};
-}
+Rect Slider::track_rect() const { return {r.x, r.y, std::max(40.0f, r.w - BUBBLE_W - RESET_W - 10), r.h}; }
+Rect Slider::bubble_rect() const { return {track_rect().right() + 10, r.y + (r.h - 28) / 2, BUBBLE_W, 28}; }
+Rect Slider::reset_rect() const { return {bubble_rect().right(), r.y + (r.h - 28) / 2, RESET_W, 28}; }
+bool Slider::changed() const { return default_ && std::abs(snap(*default_) - snap(value_)) > 1e-9; }
 
 double Slider::value_at(float x) const {
-    float x0 = r.x + 9, x1 = std::max(r.x + 10, r.right() - 9);
-    float t = (x - x0) / std::max(1.0f, x1 - x0);
-    t = clampf(t, 0, 1);
-    return snap(from_ + (to_ - from_) * t);
+    Rect t = track_rect();
+    float x0 = t.x + 10, x1 = std::max(t.x + 11, t.right() - 10);
+    float p = clampf((x - x0) / std::max(1.0f, x1 - x0), 0, 1);
+    return snap(from_ + (to_ - from_) * p);
 }
 
 float Slider::x_of(double v) const {
-    float x0 = r.x + 9, x1 = std::max(r.x + 10, r.right() - 9);
+    Rect t = track_rect();
+    float x0 = t.x + 10, x1 = std::max(t.x + 11, t.right() - 10);
     double range = to_ - from_;
-    double t = std::abs(range) < 1e-9 ? 0.0 : (v - from_) / range;
-    t = t < 0 ? 0 : (t > 1 ? 1 : t);
-    return x0 + (x1 - x0) * static_cast<float>(t);
+    double p = std::abs(range) < 1e-9 ? 0.0 : (v - from_) / range;
+    p = p < 0 ? 0 : (p > 1 ? 1 : p);
+    return x0 + (x1 - x0) * static_cast<float>(p);
 }
 
-Size Slider::measure(float avail_w) {
-    Gfx& g = Gfx::get();
-    float h = g.measure("Ag", Font::SmallBold).height + 4 + 4 + 22;
-    if (!hint_.empty() && avail_w > 0) h += 3 + g.measure(hint_, Font::Tiny, avail_w).height;
-    return {avail_w, h};
-}
+std::string Slider::shown() const { return std::format("{:.{}f}{}", value_ * unit_.scale, unit_.decimals, unit_.suffix); }
 
 void Slider::paint(Gfx& g) {
-    float head_h = g.measure("Ag", Font::SmallBold).height + 4;
-    g.text({r.x, r.y, r.w, head_h}, label_, Font::Small, TEXT_DIM);
-    std::string value = fmt_(value_);
-    float vw = g.measure(value, Font::SmallBold).width + 14;
-    Rect vr{r.right() - vw, r.y, vw, head_h};
-    g.fill_rect(vr, mix(PANEL, ACCENT, 0.14));
-    g.text(vr, value, Font::SmallBold, ACCENT, Align::Center);
-
+    grow_.set((hover_ || dragging_) ? 1.0f : 0.0f);
+    animate(grow_, 24);
+    float h = grow_.value;
     Rect t = track_rect();
     float cy = t.y + t.h / 2;
-    g.fill_rrect({t.x, cy - 3, t.w, 6}, 3, TRACK);
+    Rect groove{t.x + 2, cy - 2.5f, t.w - 4, 5};
+    g.fill_rrect(groove, 2.5f, TRACK);
     float x = x_of(value_);
-    if (x > t.x + 3) g.fill_rrect({t.x, cy - 3, x - t.x, 6}, 3, ACCENT);
-    if (hover_ || dragging_) g.fill_circle(x, cy, 12, ACCENT, 64.0f / 255.0f);
-    g.fill_circle(x, cy, 8, ACCENT);
-    g.fill_circle(x, cy, 6, TEXT);
+    if (x > groove.x + 2) g.fill_rrect_h({groove.x, groove.y, x - groove.x, groove.h}, 2.5f, ACCENT_DIM, ACCENT);
+    if (default_) {
+        float dx = x_of(*default_);
+        g.fill_rect({std::round(dx), cy + 6, 1, 5}, MUTED, 0.8f);
+    }
+    if (h > 0.01f) g.fill_circle(x, cy, 10 + 4 * h, ACCENT, 0.18f * h);
+    g.fill_circle(x, cy, 8 + h, ACCENT);
+    g.fill_circle(x, cy, 4 + h, WHITE);
 
-    if (!hint_.empty())
-        g.text({r.x, t.bottom() + 3, r.w, r.bottom() - t.bottom() - 3}, hint_, Font::Tiny, MUTED, Align::Left, true);
+    Rect b = bubble_rect();
+    bool focus = Ui::get().focus() == this && editing_;
+    g.fill_rrect(b, 7, focus ? PANEL_HI : mix(PANEL_HI, ACCENT, 0.10));
+    if (focus) g.stroke_rrect(b, 7, ACCENT);
+    if (editing_) {
+        g.text(b, edit_, Font::Num, TEXT, Align::Center);
+    } else {
+        g.text(b, shown(), Font::Num, ACCENT, Align::Center);
+    }
+    if (changed()) {
+        Rect c = reset_rect();
+        bool hot = c.contains(Ui::get().mouse.x, Ui::get().mouse.y);
+        g.text(c, ic::undo, Font::IconSmall, hot ? TEXT : (hover_ ? TEXT_DIM : MUTED), Align::Center);
+    }
 }
 
-Widget* Slider::hit_test(float x, float y) { return (visible && track_rect().contains(x, y)) ? this : nullptr; }
-
-void Slider::mouse_down(float x, float) {
+void Slider::mouse_down(float x, float y) {
+    if (bubble_rect().contains(x, y)) {
+        editing_ = true;
+        edit_.clear();
+        Ui::get().set_focus(this);
+        invalidate();
+        return;
+    }
+    if (changed() && reset_rect().contains(x, y)) {
+        apply(*default_);
+        return;
+    }
+    if (!track_rect().contains(x, y)) return;
+    Ui::get().set_focus(this);
     dragging_ = true;
     apply(value_at(x));
     invalidate();
+}
+
+void Slider::mouse_dbl(float x, float y) {
+    // podwojne klikniecie na rowku wraca do wartosci domyslnej
+    if (default_ && track_rect().contains(x, y)) {
+        dragging_ = false;
+        apply(*default_);
+        return;
+    }
+    mouse_down(x, y);
 }
 
 void Slider::mouse_move(float x, float) {
@@ -916,34 +1390,139 @@ void Slider::mouse_up(float, float) {
     invalidate();
 }
 
-// ------------------------------------------------------------------ paski
+bool Slider::key_down(unsigned vk) {
+    if (editing_) {
+        if (vk == VK_RETURN) {
+            commit_edit();
+            return true;
+        }
+        if (vk == VK_ESCAPE) {
+            editing_ = false;
+            Ui::get().set_focus(nullptr);
+            invalidate();
+            return true;
+        }
+        if (vk == VK_BACK && !edit_.empty()) {
+            edit_.pop_back();
+            invalidate();
+            return true;
+        }
+        return false;
+    }
+    double step = resolution_ != 0.0 ? resolution_ : (to_ - from_) / 100.0;
+    if (vk == VK_LEFT || vk == VK_DOWN) apply(snap(value_ - step));
+    else if (vk == VK_RIGHT || vk == VK_UP) apply(snap(value_ + step));
+    else if (vk == VK_HOME) apply(snap(std::min(from_, to_)));
+    else if (vk == VK_END) apply(snap(std::max(from_, to_)));
+    else return false;
+    return true;
+}
 
-void BarMeter::set(double value, std::optional<int> raw) {
-    value = value != value ? 0.0 : std::max(0.0, std::min(1.0, value));
-    if (std::abs(value - value_) > 0.0005 || raw != raw_) {
-        value_ = value;
-        raw_ = raw;
+void Slider::char_input(wchar_t c) {
+    if (!editing_) return;
+    if ((c >= L'0' && c <= L'9') || c == L'.' || c == L',' || c == L'-') {
+        edit_.push_back(c == L',' ? '.' : static_cast<char>(c));
         invalidate();
     }
 }
 
-Size BarMeter::measure(float avail_w) { return {avail_w, Gfx::get().measure("Ag", Font::Bold).height + 5 + 16}; }
+void Slider::commit_edit() {
+    if (!edit_.empty()) {
+        char* end = nullptr;
+        double v = std::strtod(edit_.c_str(), &end);
+        if (end != edit_.c_str()) apply(snap(v / unit_.scale));
+    }
+    editing_ = false;
+    Ui::get().set_focus(nullptr);
+    invalidate();
+}
 
-void BarMeter::paint(Gfx& g) {
-    float head = g.measure("Ag", Font::Bold).height;
-    g.text({r.x, r.y, r.w, head}, label_, Font::Small, TEXT_DIM);
-    g.text({r.x, r.y, r.w, head}, std::format("{:.0f} %", value_ * 100), Font::Bold, value_ > 0.002 ? TEXT : MUTED, Align::Right);
-    if (raw_) g.text({r.x, r.y, r.w - 58, head}, std::to_string(*raw_), Font::MonoSmall, MUTED, Align::Right);
+void Slider::focus_changed(bool focused) {
+    if (!focused && editing_) commit_edit();
+    invalidate();
+}
 
-    Rect bar{r.x, r.y + head + 5, r.w, 16};
-    g.fill_rrect(bar, 8, TRACK);
-    if (bar.w > 60)
-        for (int i = 1; i <= 3; ++i) {
-            float x = bar.x + bar.w * static_cast<float>(i) / 4;
-            g.line(x, bar.y + 3, x, bar.bottom() - 3, mix(TRACK, BORDER_HI, 0.55));
-        }
-    float fill = static_cast<float>(value_) * bar.w;
-    if (fill >= 1.5f) g.fill_rrect({bar.x, bar.y, fill, bar.h}, 8, color_);
+// -------------------------------------------------------------- wskazniki
+
+void StatusDot::set(RGB color, bool glow) {
+    if (color_ != color || glow_ != glow) {
+        color_ = color;
+        glow_ = glow;
+        invalidate();
+    }
+}
+
+void StatusDot::paint(Gfx& g) {
+    float cx = r.x + size_ / 2, cy = r.y + size_ / 2;
+    float rad = size_ / 2 - std::max(2.0f, std::floor(size_ / 5));
+    if (glow_) g.fill_circle(cx, cy, size_ / 2, color_, 0.22f);
+    g.fill_circle(cx, cy, rad, color_);
+}
+
+void StatRow::set(const std::string& value) {
+    if (value_ != value) {
+        value_ = value;
+        invalidate();
+    }
+}
+
+void StatRow::set(const std::string& value, RGB color) {
+    set(value);
+    if (color_ != color) {
+        color_ = color;
+        invalidate();
+    }
+}
+
+Size StatRow::measure(float avail_w) { return {avail_w, 26}; }
+
+void StatRow::paint(Gfx& g) {
+    g.text(r, label_, Font::Small, MUTED);
+    g.text(r, value_, Font::Num, color_, Align::Right);
+}
+
+StatTile::StatTile(std::string label, bool spark) : label_(upper_pl(label)), spark_(spark) {}
+
+void StatTile::set(const std::string& value, RGB color) {
+    if (value_ != value || color_ != color) {
+        value_ = value;
+        color_ = color;
+        invalidate();
+    }
+}
+
+void StatTile::push(double value, double scale_max) {
+    data_.push_back(std::max(0.0, value));
+    while (data_.size() > 90) data_.pop_front();
+    top_ = std::max(scale_max, 1e-6);
+    invalidate();
+}
+
+void StatTile::paint(Gfx& g) {
+    g.fill_rrect_v(r, 12, 0x181e28, 0x131821);
+    g.stroke_rrect(r, 12, BORDER);
+    g.text({r.x + 14, r.y + 10, r.w - 20, 16}, label_, Font::Caps, MUTED);
+    g.text({r.x + 14, r.y + 28, r.w - 24, 34}, value_, Font::NumLarge, color_);
+    if (!spark_ || data_.size() < 2) return;
+    Rect area{r.x + 1, r.bottom() - 44, r.w - 2, 43};
+    float step = area.w / 89.0f;
+    size_t offset = 90 - data_.size();
+    std::vector<Pt> line;
+    line.reserve(data_.size());
+    for (size_t i = 0; i < data_.size(); ++i) {
+        float x = area.x + static_cast<float>(offset + i) * step;
+        float y = area.bottom() - 4 - static_cast<float>(std::min(data_[i], top_) / top_) * (area.h - 10);
+        line.push_back({x, y});
+    }
+    std::vector<Pt> fill;
+    fill.reserve(line.size() + 2);
+    fill.push_back({line.front().x, area.bottom()});
+    fill.insert(fill.end(), line.begin(), line.end());
+    fill.push_back({line.back().x, area.bottom()});
+    g.push_rounded_clip(r, 12);
+    g.fill_poly_v(fill, area.y, area.bottom(), color_, color_, 0.28f, 0.0f);
+    g.polyline(line, color_, 1.8f);
+    g.pop_rounded_clip();
 }
 
 void TorqueMeter::set(double value) {
@@ -955,22 +1534,26 @@ void TorqueMeter::set(double value) {
 }
 
 void TorqueMeter::paint(Gfx& g) {
-    g.fill_rrect(r, r.h / 2, TRACK);
+    float radius = r.h / 2;
+    g.fill_rrect(r, radius, TRACK);
     float mid = r.x + r.w / 2;
     float len = static_cast<float>(std::abs(value_)) * r.w / 2;
     if (len >= 2) {
+        RGB color = mix(VIOLET, BAD, std::max(0.0, std::abs(value_) - 0.6) / 0.4);
         Rect fill = value_ >= 0 ? Rect{mid, r.y + 2, len, r.h - 4} : Rect{mid - len, r.y + 2, len, r.h - 4};
-        g.fill_rrect(fill, std::max(1.0f, r.h / 2 - 2), mix(VIOLET, BAD, std::max(0.0, std::abs(value_) - 0.6) / 0.4));
+        g.shadow(fill, radius - 2, 7, color, 0.3f);
+        if (value_ >= 0) g.fill_rrect_h(fill, radius - 2, mix(color, BG, 0.4), color);
+        else g.fill_rrect_h(fill, radius - 2, color, mix(color, BG, 0.4));
     }
-    for (float f : {0.2f, 0.35f, 0.65f, 0.8f}) {
-        float x = r.x + r.w * f;
-        g.line(x, r.y + r.h * 0.3f, x, r.y + r.h * 0.7f, BORDER_HI);
+    for (float f : {0.25f, 0.75f}) {
+        float x = std::round(r.x + r.w * f);
+        g.line(x + 0.5f, r.y + r.h * 0.3f, x + 0.5f, r.y + r.h * 0.7f, BORDER_HI);
     }
-    g.line(mid, r.y, mid, r.bottom(), BORDER_HI);
-    g.text(r, std::format("{:+.0f} %", value_ * 100), Font::SmallBold, std::abs(value_) > 0.02 ? TEXT : MUTED, Align::Center);
+    g.fill_rect({std::round(mid), r.y, 1, r.h}, BORDER_HI);
+    g.text(r, std::format("{:+.0f} %", value_ * 100), Font::Num, std::abs(value_) > 0.02 ? TEXT : MUTED, Align::Center);
 }
 
-void PedalGauge::set(double value, std::optional<int> raw, bool enabled) {
+void PedalBar::set(double value, std::optional<int> raw, bool enabled) {
     value = value != value ? 0.0 : (enabled ? std::max(0.0, std::min(1.0, value)) : 0.0);
     if (!enabled) raw.reset();
     if (std::abs(value - value_) > 0.0005 || raw != raw_ || enabled != enabled_) {
@@ -981,37 +1564,34 @@ void PedalGauge::set(double value, std::optional<int> raw, bool enabled) {
     }
 }
 
-Size PedalGauge::measure(float) {
-    Gfx& g = Gfx::get();
-    return {60, g.measure("Ag", Font::SmallBold).height + 6 + 140 + 4 + g.measure("Ag", Font::Heading).height +
-                    g.measure("Ag", Font::MonoSmall).height};
-}
+Size PedalBar::measure(float) { return {width_, 20 + bar_h_ + 54}; }
 
-void PedalGauge::paint(Gfx& g) {
-    float name_h = g.measure("Ag", Font::SmallBold).height;
-    g.text({r.x, r.y, r.w, name_h}, label_, Font::SmallBold, enabled_ ? TEXT_DIM : MUTED, Align::Center);
-    Rect bar{r.x + (r.w - 44) / 2, r.y + name_h + 6, 44, 140};
-    g.fill_rrect(bar, 9, TRACK);
+void PedalBar::paint(Gfx& g) {
+    g.text({r.x - 8, r.y, r.w + 16, 16}, label_, Font::SmallStrong, enabled_ ? TEXT_DIM : MUTED, Align::Center);
+    Rect bar{r.x, r.y + 22, r.w, bar_h_};
+    float radius = std::min(12.0f, r.w / 4);
+    g.fill_rrect_v(bar, radius, 0x1c232e, 0x171d27);
+    g.stroke_rrect(bar, radius, BORDER);
     for (float f : {0.25f, 0.5f, 0.75f}) {
-        float y = bar.y + std::round(bar.h * (1.0f - f));
-        g.line(bar.x + 8, y, bar.right() - 8, y, mix(TRACK, BORDER_HI, 0.55));
+        float y = std::round(bar.y + bar.h * (1.0f - f));
+        g.fill_rect({bar.x + 8, y, bar.w - 16, 1}, BORDER_HI, 0.7f);
     }
-    float h = static_cast<float>(std::lrint(bar.h * value_));
+    float h = std::round(bar.h * static_cast<float>(value_));
     if (h >= 1) {
-        // slupek przyciety do zaokraglonego rowka
-        ComPtr<ID2D1Layer> layer;
-        g.target()->CreateLayer(&layer);
-        g.target()->PushLayer(D2D1::LayerParameters(D2D1::InfiniteRect(),
-                                                    g.geometry(Shape::rrect(bar.x, bar.y, bar.right(), bar.bottom(), 9)).Get()),
-                              layer.Get());
-        g.fill_rect({bar.x, bar.bottom() - h, bar.w, h}, color_);
-        g.target()->PopLayer();
+        Rect fill{bar.x, bar.bottom() - h, bar.w, h};
+        g.shadow(fill, radius, 12, color_, 0.25f);
+        g.push_rounded_clip(bar, radius);
+        g.fill_rrect_v({fill.x, fill.y, fill.w, std::max(fill.h, radius * 2)}, 0, lighten(color_, 0.22), mix(color_, BG, 0.25));
+        g.fill_rect({fill.x, fill.y, fill.w, 2}, WHITE, 0.55f);
+        g.pop_rounded_clip();
     }
-    float y = bar.bottom() + 4;
-    float pct_h = g.measure("Ag", Font::Heading).height;
-    if (enabled_) g.text({r.x, y, r.w, pct_h}, std::format("{:.0f} %", value_ * 100), Font::Heading, value_ > 0.002 ? TEXT : MUTED, Align::Center);
-    else g.text({r.x, y, r.w, pct_h}, "wył.", Font::Heading, MUTED, Align::Center);
-    if (raw_) g.text({r.x, y + pct_h, r.w, r.bottom() - y - pct_h}, std::to_string(*raw_), Font::MonoSmall, MUTED, Align::Center);
+    float y = bar.bottom() + 6;
+    bool big = r.w >= 56;
+    Font font = big ? Font::NumLarge : Font::Num;
+    float pct_h = big ? 30.0f : 22.0f;
+    if (enabled_) g.text({r.x - 10, y, r.w + 20, pct_h}, std::format("{:.0f}%", value_ * 100), font, value_ > 0.002 ? TEXT : MUTED, Align::Center);
+    else g.text({r.x - 10, y, r.w + 20, pct_h}, "wył.", font, MUTED, Align::Center);
+    if (raw_) g.text({r.x - 10, y + pct_h, r.w + 20, 16}, std::to_string(*raw_), Font::MonoSmall, MUTED, Align::Center);
 }
 
 void ButtonGrid::set_mask(uint32_t mask) {
@@ -1021,18 +1601,19 @@ void ButtonGrid::set_mask(uint32_t mask) {
     }
 }
 
-Size ButtonGrid::measure(float avail_w) { return {avail_w > 0 ? avail_w : 352, 4 * 21 + 3 * 4}; }
+Size ButtonGrid::measure(float avail_w) { return {avail_w > 0 ? avail_w : 320, 4 * 26 + 3 * 5}; }
 
 void ButtonGrid::paint(Gfx& g) {
     const int cols = 8;
-    float gap = 4, step = (r.w - gap * (cols - 1)) / cols;
+    float gap = 5, step = (r.w - gap * (cols - 1)) / cols;
     for (int i = 0; i < 32; ++i) {
         int col = i % cols, row = i / cols;
         float x1 = std::round(static_cast<float>(col) * (step + gap));
         float x2 = std::round(static_cast<float>(col) * (step + gap) + step);
-        Rect cell{r.x + x1, r.y + static_cast<float>(row) * 25, std::max(4.0f, x2 - x1), 21};
+        Rect cell{r.x + x1, r.y + static_cast<float>(row) * 31, std::max(4.0f, x2 - x1), 26};
         bool on = (mask_ >> i) & 1;
-        g.fill_rrect(cell, 5, on ? ACCENT : TRACK);
+        if (on) g.shadow(cell, 7, 7, ACCENT, 0.45f);
+        g.fill_rrect(cell, 7, on ? ACCENT : TRACK);
         g.text(cell, std::to_string(i), Font::MonoSmall, on ? ACCENT_INK : MUTED, Align::Center);
     }
 }
@@ -1050,7 +1631,8 @@ void HatIndicator::paint(Gfx& g) {
     const Sprite& sprite = g.cached("hat/" + std::to_string(static_cast<int>(s)) + "/" + std::to_string(dir), [&] {
         float c = s / 2, gr = s * 0.12f, b = s * 0.17f, w = s * 0.13f, o = s * 0.42f;
         Paint p(static_cast<int>(s), static_cast<int>(s));
-        p.fill(Shape::circle(c, c, c - 2), darken(TRACK, 0.35));
+        p.gradient(Shape::circle(c, c, c - 2), 0x1b212b, 0x12161d);
+        p.stroke(Shape::circle(c, c, c - 2), BORDER, 1.0f);
         std::vector<Pt> arrows[4] = {{{c, c - o}, {c - w, c - b}, {c + w, c - b}},
                                      {{c + o, c}, {c + b, c - w}, {c + b, c + w}},
                                      {{c, c + o}, {c - w, c + b}, {c + w, c + b}},
@@ -1058,7 +1640,7 @@ void HatIndicator::paint(Gfx& g) {
         for (int i = 0; i < 4; ++i) {
             bool on = i == dir;
             if (on) p.glow(Shape::poly(arrows[i]), ACCENT, 4, 120);
-            p.fill(Shape::poly(arrows[i]), on ? ACCENT : TRACK);
+            p.fill(Shape::poly(arrows[i]), on ? ACCENT : BORDER_HI);
         }
         p.fill(Shape::circle(c, c, gr * 0.75f), BORDER);
         p.fill(Shape::circle(c, c, gr * 0.75f - 1), PANEL_HI);
@@ -1067,51 +1649,23 @@ void HatIndicator::paint(Gfx& g) {
     g.draw_sprite(sprite, r.x, r.y);
 }
 
-void Sparkline::push(double value, double scale_max) {
-    data_.push_back(std::max(0.0, value));
-    while (data_.size() > POINTS) data_.pop_front();
-    top_ = std::max(scale_max, 1e-6);
-    invalidate();
-}
+// ------------------------------------------------------------ CurveEditor
 
-void Sparkline::paint(Gfx& g) {
-    g.fill_rect(r, PANEL_HI);
-    RGB grid = mix(PANEL_HI, BORDER, 0.8);
-    for (float f : {0.33f, 0.66f}) g.line(r.x, r.y + r.h * f, r.right(), r.y + r.h * f, grid);
-    g.line(r.x, r.bottom() - 0.5f, r.right(), r.bottom() - 0.5f, BORDER);
-    if (data_.size() < 2) return;
-    float step = r.w / static_cast<float>(POINTS - 1);
-    size_t offset = POINTS - data_.size();
-    std::vector<Pt> line;
-    line.reserve(data_.size());
-    for (size_t i = 0; i < data_.size(); ++i) {
-        float x = r.x + static_cast<float>(offset + i) * step;
-        float y = r.bottom() - 2 - static_cast<float>(std::min(data_[i], top_) / top_) * (r.h - 6);
-        line.push_back({x, y});
-    }
-    std::vector<Pt> area;
-    area.push_back({line.front().x, r.bottom()});
-    area.insert(area.end(), line.begin(), line.end());
-    area.push_back({line.back().x, r.bottom()});
-    g.fill_poly(area, mix(PANEL_HI, color_, 0.22));
-    g.polyline(line, color_, 1.8f);
-}
+CurveEditor::CurveEditor(float height, RGB color, bool bipolar, std::array<std::string, 3> captions, Handlers handlers)
+    : height_(height), color_(color), bipolar_(bipolar), captions_(std::move(captions)), h_(std::move(handlers)) {}
 
-// -------------------------------------------------------------- CurvePlot
+void CurveEditor::set_curve(std::function<double(double)> fn) { fn_ = std::move(fn); }
 
-CurvePlot::CurvePlot(float height, RGB color, bool bipolar, std::array<std::string, 3> captions)
-    : height_(height), color_(color), bipolar_(bipolar), captions_(std::move(captions)) {}
-
-void CurvePlot::set_curve(const std::string& key, std::function<double(double)> fn, std::vector<std::pair<double, double>> shade) {
-    fn_ = std::move(fn);
-    shade_ = std::move(shade);
-    if (key != key_) {
-        key_ = key;
+void CurveEditor::set_params(double dz_low, double dz_high, double gamma) {
+    if (dz_low != dz_low_ || dz_high != dz_high_ || gamma != gamma_) {
+        dz_low_ = dz_low;
+        dz_high_ = dz_high;
+        gamma_ = gamma;
         invalidate();
     }
 }
 
-void CurvePlot::set_marker(std::optional<std::pair<double, double>> xy) {
+void CurveEditor::set_marker(std::optional<std::pair<double, double>> xy) {
     if (xy) {
         double lo = bipolar_ ? -1.0 : 0.0;
         xy->first = std::min(1.0, std::max(lo, xy->first));
@@ -1123,87 +1677,209 @@ void CurvePlot::set_marker(std::optional<std::pair<double, double>> xy) {
     }
 }
 
-void CurvePlot::set_captions(const std::string& left, const std::string& middle, const std::string& right) {
+void CurveEditor::set_captions(const std::string& left, const std::string& middle, const std::string& right) {
     if (captions_[0] != left || captions_[1] != middle || captions_[2] != right) {
         captions_ = {left, middle, right};
         invalidate();
     }
 }
 
-Pt CurvePlot::to_px(double x, double y, float w) const {
-    double lo = bipolar_ ? -1.0 : 0.0;
-    const float inset = 5;
-    float pw = w - 2 * inset, ph = height_ - 2 * inset;
-    double tx = (x - lo) / (1.0 - lo), ty = (y - lo) / (1.0 - lo);
-    return {inset + static_cast<float>(tx) * pw, inset + static_cast<float>(1.0 - ty) * ph};
+void CurveEditor::set_color(RGB color) {
+    if (color_ != color) {
+        color_ = color;
+        invalidate();
+    }
 }
 
-Sprite CurvePlot::render(float width) {
-    int w = static_cast<int>(width);
-    float fw = static_cast<float>(w), h = height_;
+Pt CurveEditor::to_px(double x, double y) const {
     double lo = bipolar_ ? -1.0 : 0.0;
-    const float pad = 1;
-    Paint p(w, static_cast<int>(h));
-    p.fill(Shape::rrect(0, 0, fw, h, 7), BORDER);
-    p.fill(Shape::rrect(pad, pad, fw - pad, h - pad, 6), PANEL_HI);
+    const float inset = 12;
+    float pw = r.w - 2 * inset, ph = height_ - 2 * inset;
+    double tx = (x - lo) / (1.0 - lo), ty = (y - lo) / (1.0 - lo);
+    return {r.x + inset + static_cast<float>(tx) * pw, r.y + inset + static_cast<float>(1.0 - ty) * ph};
+}
 
-    // zacienione martwe strefy - pas na cala wysokosc pola
-    for (auto [a, b] : shade_) {
-        if (b - a < 0.002) continue;
-        float x1 = std::max(pad + 1, to_px(a, 0, fw).x);
-        float x2 = std::min(fw - pad - 1, to_px(b, 0, fw).x);
-        if (x2 - x1 >= 1) p.fill(Shape::rrect(x1, pad + 1, x2, h - pad - 1, 3), mix(PANEL_HI, BAD, 0.12));
+CurveEditor::Part CurveEditor::part_at(float x, float y) const {
+    if (y > r.y + height_) return None;
+    if (h_.low && std::abs(x - to_px(dz_low_, 0).x) <= 8) return Low;
+    if (h_.high && std::abs(x - to_px(1.0 - dz_high_, 0).x) <= 8) return High;
+    return h_.gamma ? Curve : None;
+}
+
+void CurveEditor::drag_to(float x, float y) {
+    double lo = bipolar_ ? -1.0 : 0.0;
+    const float inset = 12;
+    float pw = r.w - 2 * inset, ph = height_ - 2 * inset;
+    double nx = (x - r.x - inset) / pw * (1.0 - lo) + lo;
+    double ny = (1.0 - (y - r.y - inset) / ph) * (1.0 - lo) + lo;
+    if (drag_ == Low && h_.low) {
+        h_.low(std::rint(std::max(0.0, std::min(0.45, nx)) * 100) / 100);
+    } else if (drag_ == High && h_.high) {
+        h_.high(std::rint(std::max(0.0, std::min(0.45, 1.0 - nx)) * 100) / 100);
+    } else if (drag_ == Curve && h_.gamma) {
+        // punkt pod kursorem wyznacza wykladnik: y = x^g
+        double span = 1.0 - dz_low_ - dz_high_;
+        double t = bipolar_ ? std::abs(nx) : (span > 1e-6 ? (nx - dz_low_) / span : nx);
+        double out = bipolar_ ? std::abs(ny) : ny;
+        t = std::max(0.08, std::min(0.92, t));
+        out = std::max(0.03, std::min(0.97, out));
+        h_.gamma(std::log(out) / std::log(t));
+    }
+}
+
+void CurveEditor::paint(Gfx& g) {
+    Rect field{r.x, r.y, r.w, height_};
+    g.fill_rrect_v(field, 10, 0x171d27, 0x141923);
+    g.stroke_rrect(field, 10, BORDER);
+    double lo = bipolar_ ? -1.0 : 0.0;
+
+    // martwe strefy - pas na cala wysokosc pola
+    if (h_.low || h_.high) {
+        for (auto [a, b] : {std::pair{0.0, dz_low_}, std::pair{1.0 - dz_high_, 1.0}}) {
+            if (b - a < 0.002) continue;
+            float x1 = std::max(r.x + 2, to_px(a, 0).x), x2 = std::min(r.right() - 2, to_px(b, 0).x);
+            if (a <= 0) x1 = r.x + 2;
+            if (b >= 1) x2 = r.right() - 2;
+            if (x2 > x1) g.fill_rect({x1, r.y + 2, x2 - x1, height_ - 4}, BAD, 0.10f);
+        }
     }
 
     RGB grid = mix(PANEL_HI, BORDER_HI, 0.55);
     for (double f : {0.25, 0.5, 0.75}) {
         double v = lo + (1.0 - lo) * f;
-        float x = to_px(v, 0, fw).x, y = to_px(0, v, fw).y;
+        Pt p = to_px(v, v);
         RGB color = (bipolar_ && f == 0.5) ? BORDER_HI : grid;
-        p.line({{x, pad + 2}, {x, h - pad - 2}}, color, 1.0f, 255, false);
-        p.line({{pad + 2, y}, {fw - pad - 2, y}}, color, 1.0f, 255, false);
+        g.line(std::round(p.x) + 0.5f, r.y + 3, std::round(p.x) + 0.5f, r.y + height_ - 3, color, 1.0f, 0.8f);
+        g.line(r.x + 3, std::round(p.y) + 0.5f, r.right() - 3, std::round(p.y) + 0.5f, color, 1.0f, 0.8f);
     }
     // przekatna - tak wyglada odpowiedz liniowa
-    p.line({to_px(lo, lo, fw), to_px(1.0, 1.0, fw)}, mix(PANEL_HI, TEXT_DIM, 0.30), 1.0f);
-
-    const int samples = 120;
-    std::vector<Pt> pts;
-    pts.reserve(samples + 1);
-    for (int i = 0; i <= samples; ++i) {
-        double x = lo + (1.0 - lo) * i / samples;
-        pts.push_back(to_px(x, fn_ ? fn_(x) : 0.0, fw));
+    {
+        Pt a = to_px(lo, lo), b = to_px(1.0, 1.0);
+        g.line(a.x, a.y, b.x, b.y, TEXT_DIM, 1.0f, 0.25f);
     }
-    float base_y = to_px(0, 0, fw).y;
-    std::vector<Pt> area;
-    area.push_back({pts.front().x, base_y});
-    area.insert(area.end(), pts.begin(), pts.end());
-    area.push_back({pts.back().x, base_y});
-    p.fill(Shape::poly(area), color_, 38);
-    p.line(pts, color_, 2.2f);
-    return p.finish();
-}
 
-void CurvePlot::paint(Gfx& g) {
-    if (r.w < 20) return;
-    float w = std::floor(r.w);
-    if (fn_ && (drawn_key_ != key_ || drawn_w_ != w || drawn_gen_ != g.generation() || !sprite_)) {
-        sprite_ = render(w);
-        drawn_key_ = key_;
-        drawn_w_ = w;
-        drawn_gen_ = g.generation();
+    if (fn_) {
+        const int samples = 140;
+        std::vector<Pt> pts;
+        pts.reserve(samples + 1);
+        for (int i = 0; i <= samples; ++i) {
+            double x = lo + (1.0 - lo) * i / samples;
+            pts.push_back(to_px(x, fn_(x)));
+        }
+        float base_y = to_px(0, 0).y;
+        std::vector<Pt> area;
+        area.reserve(pts.size() + 2);
+        area.push_back({pts.front().x, base_y});
+        area.insert(area.end(), pts.begin(), pts.end());
+        area.push_back({pts.back().x, base_y});
+        g.fill_poly_v(area, r.y, r.y + height_, color_, color_, 0.22f, 0.02f);
+        bool hot = hover_ == Curve || drag_ == Curve;
+        g.polyline(pts, color_, 7, hot ? 0.28f : 0.14f);
+        g.polyline(pts, color_, 2.4f);
     }
-    g.draw_sprite(sprite_, r.x, r.y);
-    Rect caption{r.x + 1, r.y + height_ + 1, r.w - 2, 18};
+
+    // uchwyty martwych stref
+    auto handle = [&](double value, Part part) {
+        Pt p = to_px(value, 0);
+        bool hot = hover_ == part || drag_ == part;
+        float x = std::round(p.x);
+        g.line(x, r.y + 6, x, r.y + height_ - 6, hot ? BAD : mix(BAD, PANEL_HI, 0.35), hot ? 2.0f : 1.4f);
+        Rect grip{x - 5, r.y + height_ / 2 - 15, 10, 30};
+        g.fill_rrect(grip, 5, hot ? BAD : mix(BAD, PANEL_HI, 0.2));
+        for (float dy : {-5.0f, 0.0f, 5.0f}) g.fill_rect({x - 2, r.y + height_ / 2 + dy, 4, 1}, WHITE, 0.7f);
+    };
+    if (h_.low) handle(dz_low_, Low);
+    if (h_.high) handle(1.0 - dz_high_, High);
+
+    if (h_.gamma) {
+        // obok uchwytu martwej strefy, nie pod nim
+        float gx = h_.low ? to_px(dz_low_, 0).x + 12 : r.x + 12;
+        g.text({gx, r.y + 8, 120, 18}, std::format("γ {:.2f}", gamma_), Font::Num, TEXT_DIM);
+    }
+
+    Rect caption{r.x + 2, r.y + height_ + 3, r.w - 4, 16};
     g.text(caption, captions_[0], Font::Tiny, MUTED);
     g.text(caption, captions_[1], Font::Tiny, MUTED, Align::Center);
     g.text(caption, captions_[2], Font::Tiny, MUTED, Align::Right);
+
     if (marker_) {
-        Pt m = to_px(marker_->first, marker_->second, w);
-        float x = r.x + std::round(m.x), y = r.y + std::round(m.y);
-        g.fill_circle(x, y, 8, color_, 70.0f / 255.0f);
-        g.fill_circle(x, y, 4.5f, color_);
-        g.fill_circle(x, y, 3, TEXT);
+        Pt m = to_px(marker_->first, marker_->second);
+        g.fill_circle(m.x, m.y, 10, color_, 0.25f);
+        g.fill_circle(m.x, m.y, 5.5f, color_);
+        g.fill_circle(m.x, m.y, 3, WHITE);
     }
+}
+
+void CurveEditor::mouse_move(float x, float y) {
+    if (drag_ != None) {
+        drag_to(x, y);
+        return;
+    }
+    Part p = part_at(x, y);
+    if (p != hover_) {
+        hover_ = p;
+        invalidate();
+    }
+}
+
+void CurveEditor::mouse_leave() {
+    if (hover_ != None) {
+        hover_ = None;
+        invalidate();
+    }
+}
+
+void CurveEditor::mouse_down(float x, float y) {
+    drag_ = part_at(x, y);
+    if (drag_ != None) {
+        Ui::get().set_focus(nullptr);
+        drag_to(x, y);
+    }
+    invalidate();
+}
+
+void CurveEditor::mouse_up(float, float) {
+    drag_ = None;
+    invalidate();
+}
+
+// --------------------------------------------------------------- RangeBar
+
+void RangeBar::set(int cal_min, int cal_max, std::optional<int> raw, std::optional<std::pair<int, int>> seen) {
+    if (cal_min != cal_min_ || cal_max != cal_max_ || raw != raw_ || seen != seen_) {
+        cal_min_ = cal_min;
+        cal_max_ = cal_max;
+        raw_ = raw;
+        seen_ = seen;
+        invalidate();
+    }
+}
+
+void RangeBar::set_color(RGB color) {
+    if (color_ != color) {
+        color_ = color;
+        invalidate();
+    }
+}
+
+void RangeBar::paint(Gfx& g) {
+    auto x_of = [&](int v) { return r.x + r.w * static_cast<float>(std::clamp(v, 0, 4095)) / 4095.0f; };
+    Rect bar{r.x, r.y + 8, r.w, 10};
+    g.fill_rrect(bar, 5, TRACK);
+    float x1 = x_of(cal_min_), x2 = x_of(cal_max_);
+    g.fill_rrect({x1, bar.y, std::max(2.0f, x2 - x1), bar.h}, 5, color_, 0.35f);
+    if (seen_) {
+        float a = x_of(seen_->first), b = x_of(seen_->second);
+        g.fill_rect({a, bar.y - 5, std::max(1.0f, b - a), 2}, TEXT_DIM, 0.8f);
+    }
+    if (raw_) {
+        float x = std::round(x_of(*raw_));
+        g.fill_rect({x - 1, bar.y - 3, 2, bar.h + 6}, WHITE);
+    }
+    Rect caption{r.x, bar.bottom() + 6, r.w, 16};
+    g.text(caption, std::format("kalibracja {} – {}", cal_min_, cal_max_), Font::Tiny, MUTED);
+    if (seen_) g.text(caption, std::format("widziano {} – {}", seen_->first, seen_->second), Font::Tiny, MUTED, Align::Center);
+    g.text(caption, raw_ ? std::to_string(*raw_) : std::string("-"), Font::MonoSmall, TEXT_DIM, Align::Right);
 }
 
 // -------------------------------------------------------------- WheelDial
@@ -1226,55 +1902,72 @@ void WheelDial::set_angle(double degrees) {
 
 Sprite WheelDial::wheel_sprite(RGB marker) {
     float s = size_;
-    float ring_w = std::max(9.0f, std::floor(s / 19));
-    float r_in = s / 2 - 6 - ring_w;
-    float rad = r_in - 20;
-    float rim_w = std::max(7.0f, s / 26);
-    int half = static_cast<int>(std::ceil(rad + rim_w)) + 4;
+    float rim_r = s / 2 - 36;
+    float rim_w = std::max(13.0f, s / 15);
+    int half = static_cast<int>(std::ceil(rim_r + rim_w)) + 8;
     Paint p(half * 2, half * 2);
     float c = static_cast<float>(half);
-    Shape rim = Shape::ring(c, c, rad + rim_w / 2, rad - rim_w / 2, 0, 360);
-    // cien obreczy bez przesuniecia - obraca sie razem z kolem
-    p.shadow(rim, 0, 4, 150);
-    // ramiona w lewo i w prawo i szprycha w dol - pod obrecza
-    RGB spoke = mix(PANEL_HI, TEXT, 0.16);
+    float rim_o = rim_r + rim_w / 2, rim_i = rim_r - rim_w / 2;
+    Shape rim = Shape::ring(c, c, rim_o, rim_i, 0, 360);
+    p.shadow(rim, 0, 5, 170);
+
+    // ramiona zwezaja sie ku obreczy
+    float hub = std::max(26.0f, s / 8.5f);
     for (float deg : {0.0f, 180.0f, 90.0f}) {
         float a = deg * PI / 180.0f;
-        p.line({{c, c}, {c + rad * std::cos(a), c + rad * std::sin(a)}}, spoke, rim_w + 3, 255, false);
+        float ca = std::cos(a), sa = std::sin(a);
+        float nx = -sa, ny = ca;
+        float w0 = hub * 0.72f, w1 = rim_w * 0.85f;
+        float r0 = hub * 0.5f, r1 = rim_i + 3;
+        std::vector<Pt> poly = {{c + ca * r0 + nx * w0, c + sa * r0 + ny * w0}, {c + ca * r1 + nx * w1, c + sa * r1 + ny * w1},
+                                {c + ca * r1 - nx * w1, c + sa * r1 - ny * w1}, {c + ca * r0 - nx * w0, c + sa * r0 - ny * w0}};
+        Shape spoke = Shape::poly(poly);
+        p.gradient(spoke, 0x39414f, 0x1d222c);
+        p.stroke(spoke, WHITE, 1.0f, 18);
     }
-    p.gradient(rim, mix(PANEL_HI, TEXT, 0.30), darken(PANEL_HI, 0.25));
-    p.sheen(rim, 40, 0.4f);
-    float hub = std::max(14.0f, s / 14);
-    p.fill(Shape::circle(c, c, hub + 4), PANEL_HI);
-    p.gradient(Shape::circle(c, c, hub), 0x2a313d, PANEL);
-    p.stroke(Shape::circle(c, c, hub), mix(ACCENT_DIM, marker, 0.5), 2.0f);
+
+    p.gradient(rim, 0x4d5667, 0x1a1f28);
+    p.sheen(rim, 46, 0.38f);
+    p.stroke(Shape::circle(c, c, rim_o), WHITE, 1.0f, 26);
+    for (int k = 0; k < 96; ++k) {
+        float a = static_cast<float>(k) * 3.75f * PI / 180.0f, b = (static_cast<float>(k) * 3.75f + 1.7f) * PI / 180.0f;
+        p.line({{c + rim_r * std::cos(a), c + rim_r * std::sin(a)}, {c + rim_r * std::cos(b), c + rim_r * std::sin(b)}}, WHITE, 0.9f, 30);
+    }
+
+    // piasta
+    Shape boss = Shape::circle(c, c, hub);
+    p.shadow(boss, 2, 5, 170);
+    p.gradient(boss, 0x343c4a, 0x161b23);
+    p.stroke(boss, WHITE, 1.0f, 22);
+    Shape cap = Shape::circle(c, c, hub * 0.62f);
+    p.gradient(cap, 0x202631, 0x12161d);
+    p.stroke(cap, mix(ACCENT_DIM, marker, 0.6), 2.0f);
+    p.fill(Shape::circle(c, c, hub * 0.14f), marker);
+
     // pasek "gora kierownicy" na obreczy
-    p.line({{c, c - rad - rim_w / 2 + 1}, {c, c - rad + rim_w / 2 - 1}}, marker, rim_w + 1, 255, false);
+    p.line({{c, c - rim_o + 1}, {c, c - rim_i - 1}}, marker, 7, 255, false);
     return p.finish();
 }
 
 void WheelDial::paint(Gfx& g) {
     float s = size_;
     float c = s / 2;
-    float ring_w = std::max(9.0f, std::floor(s / 19));
-    float r_out = s / 2 - 6;
-    float r_in = r_out - ring_w;
-    float r_mid = r_out - ring_w / 2;
+    const float sweep = 135.0f;
+    const float ring_w = 9;
+    float rad = s / 2 - 12;
     float cx = r.x + c, cy = r.y + c;
 
-    // tlo: rowek pierscienia, podzialka i znacznik zera
+    // rowek gauge'a z podzialka - przerwa na dole
     const Sprite& base = g.cached("dial/" + std::to_string(static_cast<int>(s)), [&] {
         Paint p(static_cast<int>(s), static_cast<int>(s));
-        p.fill(Shape::ring(c, c, r_out, r_in, 0, 360), TRACK);
-        p.stroke(Shape::circle(c, c, r_out), BLACK, 1.0f, 60);
+        p.arc(c, c, rad, -90.0f - sweep, -90.0f + sweep, TRACK, ring_w);
         for (int i = -4; i <= 4; ++i) {
-            float a = (-90.0f + static_cast<float>(i) * 45.0f) * PI / 180.0f;
-            bool major = (i & 1) == 0;
-            float r1 = r_in - 5, r0 = r1 - (major ? 10.0f : 5.0f);
+            float a = (-90.0f + static_cast<float>(i) * sweep / 4.0f) * PI / 180.0f;
+            float r1 = rad - ring_w / 2 - 4, r0 = r1 - ((i % 2 == 0) ? 8.0f : 4.0f);
             p.line({{c + r0 * std::cos(a), c + r0 * std::sin(a)}, {c + r1 * std::cos(a), c + r1 * std::sin(a)}},
-                   major ? TEXT_DIM : BORDER_HI, major ? 2.0f : 1.2f);
+                   (i % 2 == 0) ? MUTED : BORDER_HI, (i % 2 == 0) ? 1.8f : 1.2f);
         }
-        p.fill(Shape::poly({{c, c - r_out + 1}, {c - 5, c - r_out - 6}, {c + 5, c - r_out - 6}}), MUTED);
+        p.fill(Shape::poly({{c, c - rad + ring_w / 2 + 1}, {c - 5, c - rad - ring_w / 2 - 5}, {c + 5, c - rad - ring_w / 2 - 5}}), TEXT_DIM);
         return p.finish();
     });
     g.draw_sprite(base, r.x, r.y);
@@ -1282,30 +1975,166 @@ void WheelDial::paint(Gfx& g) {
     double half = range_ / 2.0;
     double frac = std::max(-1.0, std::min(1.0, deg_ / half));
     bool over = std::abs(deg_) > half + 0.5;
-    // kolor ma kilka stopni - kolo dla kazdego rysujemy tylko raz
     double near_end = std::rint(std::min(1.0, std::max(0.0, (std::abs(frac) - 0.75) / 0.25)) * 4) / 4;
     RGB color = over ? BAD : mix(ACCENT, WARN, near_end);
 
     if (std::abs(frac) > 0.003) {
-        float a0 = -90.0f, a1 = -90.0f + static_cast<float>(frac) * 180.0f;
+        float a0 = -90.0f, a1 = -90.0f + static_cast<float>(frac) * sweep;
         if (a0 > a1) std::swap(a0, a1);
-        g.arc(cx, cy, r_mid, a0, a1, color, ring_w - 2);
+        g.arc(cx, cy, rad, a0, a1, color, ring_w + 9, 0.14f);
+        g.arc(cx, cy, rad, a0, a1, color, ring_w);
     }
 
     const Sprite& wheel = g.cached(std::format("dial-wheel/{}/{:06x}", static_cast<int>(s), color), [&] { return wheel_sprite(color); });
     g.draw_sprite_rotated(wheel, cx, cy, static_cast<float>(deg_));
+}
 
-    std::string text = std::abs(deg_) < 0.5 ? "0°" : std::format("{:+.0f}°", deg_);
-    float ry = r.y + s + 6;
-    g.text_at(cx, ry + 16, text, Font::Big, over ? BAD : TEXT);
-    g.text_at(cx, ry + 46, std::format("zakres {}°", static_cast<int>(range_)), Font::Small, MUTED);
+// ------------------------------------------------------------- TraceChart
+
+TraceChart::TraceChart(std::vector<Series> series, std::vector<Lane> lanes, float height, double window_s)
+    : series_(std::move(series)), lanes_(std::move(lanes)), height_(height), window_(window_s) {
+    shown_.fill(true);
+}
+
+void TraceChart::set_live(bool live) {
+    if (live_ != live) {
+        live_ = live;
+        invalidate();
+    }
+}
+
+void TraceChart::push(double now, const std::array<float, MAX_SERIES>& values, bool repaint) {
+    if (!samples_.empty() && now - samples_.back().t < 1.0 / 90.0) return;
+    samples_.push_back({now, values});
+    while (!samples_.empty() && now - samples_.front().t > window_ + 0.5) samples_.pop_front();
+    now_ = now;
+    if (repaint && live_) invalidate();
+}
+
+float TraceChart::legend_x(size_t index) const {
+    Gfx& g = Gfx::get();
+    float x = r.right();
+    for (size_t i = series_.size(); i-- > index;) x -= g.measure(series_[i].name, Font::Tiny).width + 14 + 16;
+    return x;
+}
+
+int TraceChart::legend_at(float x, float y) const {
+    if (y > r.y + 20) return -1;
+    Gfx& g = Gfx::get();
+    for (size_t i = 0; i < series_.size(); ++i) {
+        float left = legend_x(i);
+        float w = g.measure(series_[i].name, Font::Tiny).width + 14;
+        if (x >= left && x < left + w) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+void TraceChart::paint(Gfx& g) {
+    // legenda - klik chowa serie
+    for (size_t i = 0; i < series_.size(); ++i) {
+        float x = legend_x(i);
+        float w = g.measure(series_[i].name, Font::Tiny).width + 14;
+        bool on = shown_[i];
+        g.fill_circle(x + 4, r.y + 9, 3.5f, series_[i].color, on ? 1.0f : 0.25f);
+        g.text({x + 12, r.y + 1, w, 16}, series_[i].name, Font::Tiny, static_cast<int>(i) == hover_ ? TEXT : (on ? TEXT_DIM : MUTED));
+    }
+
+    float top = r.y + 24;
+    float total_h = r.h - 24;
+    float weights = 0;
+    for (const Lane& lane : lanes_) weights += lane.weight;
+    float gap = 8;
+    float avail = total_h - gap * static_cast<float>(lanes_.size() - 1);
+    float y = top;
+
+    for (size_t l = 0; l < lanes_.size(); ++l) {
+        const Lane& lane = lanes_[l];
+        float h = std::round(avail * lane.weight / weights);
+        Rect field{r.x, y, r.w, h};
+        g.fill_rrect_v(field, 9, 0x171d27, 0x141923);
+        g.stroke_rrect(field, 9, BORDER);
+        g.push_rounded_clip(field, 9);
+
+        // znaczniki czasu co 2 s przesuwaja sie z wykresem
+        double phase = std::fmod(now_, 2.0);
+        for (double t = phase; t < window_; t += 2.0) {
+            float x = std::round(field.right() - static_cast<float>(t / window_) * field.w);
+            g.fill_rect({x, field.y, 1, field.h}, BORDER, 0.7f);
+        }
+        auto lane_y = [&](float v) {
+            if (lane.bipolar) return field.y + field.h / 2 - v * (field.h / 2 - 5);
+            return field.bottom() - 4 - v * (field.h - 9);
+        };
+        if (lane.bipolar) g.fill_rect({field.x, std::round(field.y + field.h / 2), field.w, 1}, BORDER_HI, 0.9f);
+        else g.fill_rect({field.x, std::round(field.y + field.h / 2), field.w, 1}, BORDER, 0.7f);
+
+        for (size_t s = 0; s < series_.size(); ++s) {
+            if (series_[s].lane != static_cast<int>(l) || !shown_[s] || samples_.size() < 2) continue;
+            std::vector<Pt> pts;
+            pts.reserve(samples_.size());
+            float last_x = 1e9f;
+            for (auto it = samples_.rbegin(); it != samples_.rend(); ++it) {
+                double age = now_ - it->t;
+                if (age > window_) break;
+                float x = field.right() - static_cast<float>(age / window_) * field.w;
+                if (last_x - x < 1.2f && !pts.empty()) continue;
+                last_x = x;
+                pts.push_back({x, lane_y(it->v[s])});
+            }
+            if (pts.size() < 2) continue;
+            if (series_[s].area) {
+                std::vector<Pt> area = pts;
+                float base = lane_y(0);
+                area.push_back({pts.back().x, base});
+                area.push_back({pts.front().x, base});
+                g.fill_poly_v(area, field.y, field.bottom(), series_[s].color, series_[s].color, 0.30f, 0.03f);
+            }
+            g.polyline(pts, series_[s].color, 1.8f);
+        }
+        g.pop_rounded_clip();
+        // podklad, zeby linia wykresu nie przecinala napisu
+        g.fill_rrect({field.x + 5, field.y + 3, g.measure(lane.title, Font::Caps).width + 12, 18}, 5, 0x171d27, 0.82f);
+        g.text({field.x + 10, field.y + 5, 200, 15}, lane.title, Font::Caps, MUTED);
+        y += h + gap;
+    }
+
+    if (!live_) {
+        float w = g.measure(OFFLINE_LIVE, Font::Small).width + 28;
+        Rect note{r.x + (r.w - w) / 2, top + total_h / 2 - 15, w, 30};
+        g.fill_rrect(note, 15, PANEL_HI, 0.92f);
+        g.stroke_rrect(note, 15, BORDER);
+        g.text(note, OFFLINE_LIVE, Font::Small, TEXT_DIM, Align::Center);
+    }
+}
+
+void TraceChart::mouse_move(float x, float y) {
+    int i = legend_at(x, y);
+    if (i != hover_) {
+        hover_ = i;
+        invalidate();
+    }
+}
+
+void TraceChart::mouse_leave() {
+    if (hover_ != -1) {
+        hover_ = -1;
+        invalidate();
+    }
+}
+
+void TraceChart::mouse_down(float x, float y) {
+    int i = legend_at(x, y);
+    if (i >= 0) {
+        shown_[static_cast<size_t>(i)] = !shown_[static_cast<size_t>(i)];
+        invalidate();
+    }
 }
 
 // --------------------------------------------------------------- TextView
 
 float TextView::line_height() { return Gfx::get().measure("Ag", Font::MonoSmall).height; }
 
-Size TextView::measure(float avail_w) { return {avail_w, static_cast<float>(rows_) * line_height() + 16}; }
+Size TextView::measure(float avail_w) { return {avail_w, static_cast<float>(rows_) * line_height() + 20}; }
 
 void TextView::clear() {
     lines_.clear();
@@ -1315,12 +2144,12 @@ void TextView::clear() {
 
 void TextView::set_lines(const std::vector<std::string>& lines, RGB color) {
     lines_.clear();
-    for (const auto& l : lines) lines_.push_back({l, color});
+    for (const auto& l : lines) lines_.push_back({l, color, 0});
     invalidate();
 }
 
-void TextView::append(const std::string& line, RGB color) {
-    lines_.push_back({line, color});
+void TextView::append(const std::string& line, RGB color, int level) {
+    lines_.push_back({line, color, level});
     // ograniczenie dziennika do 600 linii
     while (lines_.size() > 600) lines_.pop_front();
     invalidate();
@@ -1330,6 +2159,14 @@ void TextView::set_rows(int rows) {
     if (rows_ != rows) {
         rows_ = rows;
         relayout();
+    }
+}
+
+void TextView::set_filter(int min_level) {
+    if (min_level_ != min_level) {
+        min_level_ = min_level;
+        follow_ = true;
+        invalidate();
     }
 }
 
@@ -1343,7 +2180,7 @@ std::string TextView::joined() const {
 }
 
 bool TextView::mouse_wheel(int delta) {
-    float view = r.h - 16;
+    float view = r.h - 20;
     if (content_h_ <= view) return false;
     float max_off = content_h_ - view;
     follow_ = false;
@@ -1354,14 +2191,15 @@ bool TextView::mouse_wheel(int delta) {
 }
 
 void TextView::paint(Gfx& g) {
-    g.fill_rect(r, PANEL_HI);
-    Rect in{r.x + 10, r.y + 8, r.w - 20 - 8, r.h - 16};
+    g.fill_rrect(r, 10, 0x0f131a);
+    g.stroke_rrect(r, 10, BORDER);
+    Rect in{r.x + 12, r.y + 10, r.w - 24 - 8, r.h - 20};
     float total = 0;
+    float line_h = line_height();
     std::vector<float> heights;
     heights.reserve(lines_.size());
-    float line_h = line_height();
     for (const auto& l : lines_) {
-        float h = l.text.empty() ? line_h : g.measure(l.text, Font::MonoSmall, in.w).height;
+        float h = l.level < min_level_ ? 0.0f : (l.text.empty() ? line_h : g.measure(l.text, Font::MonoSmall, in.w).height);
         heights.push_back(h);
         total += h;
     }
@@ -1373,7 +2211,8 @@ void TextView::paint(Gfx& g) {
     g.push_clip(in);
     float y = in.y - offset_;
     for (size_t i = 0; i < lines_.size(); ++i) {
-        if (y + heights[i] >= in.y && y <= in.bottom())
+        bool cut_top = follow_ && y < in.y - 0.5f;
+        if (heights[i] > 0 && !cut_top && y + heights[i] >= in.y && y <= in.bottom())
             g.text({in.x, y, in.w, heights[i]}, lines_[i].text, Font::MonoSmall, lines_[i].color, Align::Left, true);
         y += heights[i];
     }
@@ -1382,69 +2221,302 @@ void TextView::paint(Gfx& g) {
     if (total > in.h) {
         float bar_h = std::max(20.0f, in.h * in.h / total);
         float bar_y = in.y + (in.h - bar_h) * (max_off > 0 ? offset_ / max_off : 0);
-        g.fill_rrect({r.right() - 8, bar_y, 6, bar_h}, 3, ELEV);
+        g.fill_rrect({r.right() - 9, bar_y, 5, bar_h}, 2.5f, BORDER_HI);
     }
 }
 
-// ----------------------------------------------------------------- TabBar
+// --------------------------------------------------------------- ModeTile
 
-TabBar::TabBar(std::vector<std::string> labels, std::vector<std::string> icons, std::function<void(int)> command)
-    : labels_(std::move(labels)), icons_(std::move(icons)), command_(std::move(command)) {
-    rects_.resize(labels_.size());
+ModeTile::ModeTile(const char* icon, std::string title, std::string desc, std::function<void()> command)
+    : icon_(icon), title_(std::move(title)), desc_(std::move(desc)), command_(std::move(command)) {}
+
+void ModeTile::set_selected(bool selected) {
+    if (selected_ != selected) {
+        selected_ = selected;
+        invalidate();
+    }
 }
 
-void TabBar::select(int index) {
+Size ModeTile::measure(float avail_w) { return {avail_w, 84}; }
+
+void ModeTile::paint(Gfx& g) {
+    sel_anim_.set(selected_ ? 1.0f : 0.0f);
+    hover_anim_.set(hover_ ? 1.0f : 0.0f);
+    animate(sel_anim_, 18);
+    animate(hover_anim_, 22);
+    float s = sel_anim_.value, h = hover_anim_.value;
+    RGB fill = mix(mix(PANEL_HI, ELEV, h * 0.6), ACCENT_DEEP, s * 0.8);
+    if (s > 0.01f) g.shadow(r, 12, 12, ACCENT, 0.16f * s);
+    g.fill_rrect(r, 12, fill);
+    g.stroke_rrect(r, 12, mix(mix(BORDER, BORDER_HI, h), ACCENT, s));
+    g.text({r.x + 12, r.y + 12, 22, 22}, icon_, Font::Icon, mix(TEXT_DIM, ACCENT, s), Align::Center);
+    if (s > 0.5f) g.text({r.right() - 28, r.y + 10, 18, 20}, ic::check, Font::IconSmall, ACCENT, Align::Center);
+    g.text_fit({r.x + 12, r.y + 38, r.w - 20, 18}, title_, Font::BodyStrong, TEXT);
+    g.text_fit({r.x + 12, r.y + 57, r.w - 20, 18}, desc_, Font::Tiny, mix(MUTED, TEXT_DIM, s));
+}
+
+void ModeTile::mouse_up(float x, float y) {
+    if (r.contains(x, y) && command_) command_();
+}
+
+// ------------------------------------------------------------- StatusLine
+
+StatusLine::StatusLine() = default;
+
+void StatusLine::set(Level level, const std::string& title, const std::string& detail) {
+    if (level != level_) {
+        level_ = level;
+        invalidate();
+    }
+    if (title != title_ || detail != detail_) {
+        title_ = title;
+        detail_ = detail;
+        relayout();
+    }
+}
+
+void StatusLine::set_action(const std::string& text, std::function<void()> command) {
+    if (text.empty()) {
+        if (action_) {
+            action_.reset();
+            relayout();
+        }
+        return;
+    }
+    if (!action_) {
+        action_ = std::make_unique<Button>(text, Button::Small, std::move(command));
+        relayout();
+    } else {
+        action_->set(text);
+        action_->set_command(std::move(command));
+    }
+}
+
+float StatusLine::action_w() { return action_ ? action_->measure(0).w + 10 : 0.0f; }
+
+Size StatusLine::measure(float avail_w) {
+    Gfx& g = Gfx::get();
+    float tw = std::max(80.0f, avail_w - 36 - action_w());
+    float h = g.measure(title_, Font::BodyStrong, tw).height;
+    if (!detail_.empty()) h += g.measure(detail_, Font::Small, tw).height + 1;
+    return {avail_w, std::max(h, action_ ? 30.0f : 24.0f) + 14};
+}
+
+void StatusLine::arrange(const Rect& rc) {
+    r = rc;
+    if (action_) {
+        float w = action_->measure(0).w;
+        action_->arrange(snapped({rc.right() - w, rc.y + (rc.h - 30) / 2, w, 30}));
+    }
+}
+
+void StatusLine::paint(Gfx& g) {
+    float cx = r.x + 13, cy = r.y + r.h / 2;
+    RGB color = MUTED;
+    const char* glyph = nullptr;
+    switch (level_) {
+    case Level::Ok: color = GOOD; glyph = ic::check; break;
+    case Level::Warn: color = WARN; glyph = ic::warn; break;
+    case Level::Bad: color = BAD; glyph = ic::cancel; break;
+    case Level::Off: color = MUTED; glyph = ic::remove; break;
+    case Level::Busy: color = WARN; break;
+    }
+    g.fill_circle(cx, cy, 13, color, 0.15f);
+    if (level_ == Level::Busy) {
+        g.spinner(cx, cy, 7, color, Ui::get().time);
+        invalidate();
+    } else {
+        g.text({cx - 11, cy - 11, 22, 22}, glyph, Font::IconSmall, color, Align::Center);
+    }
+    float tw = std::max(80.0f, r.w - 36 - action_w());
+    float title_h = g.measure(title_, Font::BodyStrong, tw).height;
+    float detail_h = detail_.empty() ? 0.0f : g.measure(detail_, Font::Small, tw).height + 1;
+    float y = r.y + (r.h - title_h - detail_h) / 2;
+    g.text({r.x + 36, y, tw, title_h}, title_, Font::BodyStrong, TEXT, Align::Left, true);
+    if (!detail_.empty()) g.text({r.x + 36, y + title_h + 1, tw, detail_h}, detail_, Font::Small, MUTED, Align::Left, true);
+    if (action_) action_->paint(g);
+}
+
+Widget* StatusLine::hit_test(float x, float y) {
+    if (!visible || !r.contains(x, y)) return nullptr;
+    return action_ ? action_->hit_test(x, y) : nullptr;
+}
+
+// ---------------------------------------------------------------- Sidebar
+
+namespace {
+constexpr float NAV_TOP = 88, NAV_ITEM = 42, NAV_GAP = 2, NAV_HEADER = 30;
+}
+
+Sidebar::Sidebar(std::vector<Item> items, std::function<void(int)> command)
+    : items_(std::move(items)), command_(std::move(command)) {
+    rects_.resize(items_.size());
+    badges_.resize(items_.size());
+    hover_anim_.resize(items_.size());
+}
+
+void Sidebar::select(int index) {
     if (selected_ != index) {
         selected_ = index;
         invalidate();
     }
 }
 
-Size TabBar::measure(float) {
-    Gfx& g = Gfx::get();
-    float w = 0;
-    float icon_w = g.has_icon_font() ? 15.0f + 7.0f : 0.0f;
-    for (const auto& label : labels_) w += g.measure(label, Font::SmallBold).width + icon_w + 28;
-    return {w, g.measure("Ag", Font::SmallBold).height + 8 + 9 + 2};
+void Sidebar::set_badge(int index, const std::string& text, RGB color) {
+    auto& b = badges_[static_cast<size_t>(index)];
+    if (b.first != text || b.second != color) {
+        b = {text, color};
+        invalidate();
+    }
 }
 
-void TabBar::arrange(const Rect& rc) {
+void Sidebar::set_compact(bool compact) {
+    if (compact_ != compact) {
+        compact_ = compact;
+        indicator_placed_ = false;
+        relayout();
+    }
+}
+
+void Sidebar::set_cluster(bool live, double deg, double range, double throttle, double brake, double clutch) {
+    if (live != live_ || std::abs(deg - deg_) >= 0.5 || range != range_ || std::abs(throttle - throttle_) > 0.002 ||
+        std::abs(brake - brake_) > 0.002 || std::abs(clutch - clutch_) > 0.002) {
+        live_ = live;
+        deg_ = deg;
+        range_ = range;
+        throttle_ = throttle;
+        brake_ = brake;
+        clutch_ = clutch;
+        invalidate();
+    }
+}
+
+bool Sidebar::is_drag_area(float x, float y) const { return x < r.right() && y < NAV_TOP - 8; }
+
+void Sidebar::arrange(const Rect& rc) {
     r = rc;
-    Gfx& g = Gfx::get();
-    float x = rc.x;
-    float icon_w = g.has_icon_font() ? 15.0f + 7.0f : 0.0f;
-    for (size_t i = 0; i < labels_.size(); ++i) {
-        float w = g.measure(labels_[i], Font::SmallBold).width + icon_w + 28;
-        rects_[i] = {x, rc.y, w, rc.h};
-        x += w;
-    }
-}
-
-void TabBar::paint(Gfx& g) {
-    for (size_t i = 0; i < labels_.size(); ++i) {
-        bool sel = static_cast<int>(i) == selected_;
-        RGB fg = sel ? TEXT : (static_cast<int>(i) == hover_ ? TEXT_DIM : MUTED);
-        RGB icon_fg = sel ? ACCENT : fg;
-        const Rect& rc = rects_[i];
-        float x = rc.x + 14;
-        Rect row{x, rc.y, rc.w - 28, rc.h - 2};
-        if (g.has_icon_font()) {
-            g.text({x, rc.y, 15, rc.h - 2}, icons_[i], Font::Icon, icon_fg, Align::Center);
-            row.x += 22;
-            row.w -= 22;
+    headers_.clear();
+    float y = rc.y + NAV_TOP;
+    float pad = compact_ ? 12.0f : 12.0f;
+    std::string group;
+    for (size_t i = 0; i < items_.size(); ++i) {
+        if (items_[i].group != group) {
+            group = items_[i].group;
+            if (!compact_) {
+                headers_.push_back({y, upper_pl(group)});
+                y += NAV_HEADER;
+            } else if (i) {
+                y += 12;
+            }
         }
-        g.text(row, labels_[i], Font::SmallBold, fg);
-        if (sel) g.fill_rect({rc.x + 6, rc.bottom() - 2, rc.w - 12, 2}, ACCENT);
+        rects_[i] = {rc.x + pad, y, rc.w - 2 * pad, NAV_ITEM};
+        y += NAV_ITEM + NAV_GAP;
+    }
+    float cluster_h = compact_ ? 118.0f : 112.0f;
+    cluster_ = {rc.x + 12, rc.bottom() - 14 - cluster_h, rc.w - 24, cluster_h};
+    show_cluster_ = cluster_.y > y + 6;
+}
+
+void Sidebar::paint(Gfx& g) {
+    g.fill_rect(r, SIDEBAR);
+    g.fill_rect({r.right() - 1, r.y, 1, r.h}, BORDER);
+
+    // znak: kierownica w kolku
+    float lx = r.x + (compact_ ? r.w / 2 : 34), ly = r.y + 44;
+    g.stroke_circle(lx, ly, 14, ACCENT, 3);
+    g.polyline({{lx - 11, ly}, {lx + 11, ly}}, ACCENT, 3);
+    g.polyline({{lx, ly}, {lx, ly + 12}}, ACCENT, 3);
+    g.fill_circle(lx, ly, 4.5f, SIDEBAR);
+    g.stroke_circle(lx, ly, 4.5f, ACCENT, 2);
+    if (!compact_) g.text({lx + 24, ly - 15, 150, 30}, "Kierownica", Font::Head, TEXT);
+
+    for (const auto& [y, title] : headers_) g.text({r.x + 24, y + 8, r.w - 40, 16}, title, Font::Caps, MUTED);
+
+    // znacznik wybranej pozycji jedzie miedzy wierszami
+    if (!indicator_placed_) {
+        indicator_.snap(rects_[static_cast<size_t>(selected_)].y);
+        indicator_placed_ = true;
+    }
+    indicator_.set(rects_[static_cast<size_t>(selected_)].y);
+    animate(indicator_, 20);
+    Rect sel = rects_[static_cast<size_t>(selected_)];
+    sel.y = indicator_.value;
+    g.fill_rrect(sel, 10, PANEL_HI);
+    g.stroke_rrect(sel, 10, BORDER);
+    g.fill_rrect({sel.x + 4, sel.y + 11, 3, sel.h - 22}, 1.5f, ACCENT);
+
+    for (size_t i = 0; i < items_.size(); ++i) {
+        bool is_sel = static_cast<int>(i) == selected_;
+        hover_anim_[i].set(static_cast<int>(i) == hover_ && !is_sel ? 1.0f : 0.0f);
+        animate(hover_anim_[i], 22);
+        float h = hover_anim_[i].value;
+        const Rect& rc = rects_[i];
+        if (h > 0.01f) g.fill_rrect(rc, 10, PANEL_HI, h * 0.7f);
+        RGB fg = is_sel ? TEXT : mix(TEXT_DIM, TEXT, h);
+        RGB icon = is_sel ? ACCENT : fg;
+        if (compact_) {
+            g.text(rc, items_[i].icon, Font::Icon, icon, Align::Center);
+        } else {
+            g.text({rc.x + 14, rc.y, 24, rc.h}, items_[i].icon, Font::Icon, icon, Align::Center);
+            g.text({rc.x + 46, rc.y, rc.w - 90, rc.h}, items_[i].label, is_sel ? Font::BodyStrong : Font::Body, fg);
+        }
+        const auto& [text, color] = badges_[i];
+        if (!text.empty()) {
+            if (compact_) {
+                g.fill_circle(rc.right() - 12, rc.y + 11, 4, color);
+            } else {
+                float w = std::max(20.0f, g.measure(text, Font::TinyStrong).width + 12);
+                Rect b{rc.right() - 10 - w, rc.y + (rc.h - 20) / 2, w, 20};
+                g.fill_rrect(b, 10, color, 0.18f);
+                g.text(b, text, Font::TinyStrong, color, Align::Center);
+            }
+        }
+    }
+    if (show_cluster_) paint_cluster(g);
+}
+
+void Sidebar::paint_cluster(Gfx& g) {
+    const Rect& c = cluster_;
+    g.fill_rrect_v(c, 12, 0x161b25, 0x11151c);
+    g.stroke_rrect(c, 12, BORDER);
+    std::string angle = !live_ ? "—" : (std::abs(deg_) < 0.5 ? "0°" : std::format("{:+.0f}°", deg_));
+    const std::pair<double, RGB> pedals[3] = {{throttle_, GOOD}, {brake_, BAD}, {clutch_, WARN}};
+    if (compact_) {
+        g.text({c.x, c.y + 8, c.w, 22}, angle, Font::Num, TEXT, Align::Center);
+        float bx = c.x + (c.w - 8 * 3 - 6 * 2) / 2;
+        for (int i = 0; i < 3; ++i) {
+            Rect bar{bx + static_cast<float>(i) * 14, c.y + 36, 8, 70};
+            g.fill_rrect(bar, 4, TRACK);
+            float h = std::round(bar.h * static_cast<float>(pedals[i].first));
+            if (live_ && h >= 2) {
+                g.push_rounded_clip(bar, 4);
+                g.fill_rect({bar.x, bar.bottom() - h, bar.w, h}, pedals[i].second);
+                g.pop_rounded_clip();
+            }
+        }
+        return;
+    }
+    g.text({c.x + 14, c.y + 8, c.w - 28, 30}, angle, Font::NumLarge, TEXT);
+    g.text({c.x + 14, c.y + 8, c.w - 28, 30}, std::format("z {:.0f}°", range_), Font::Tiny, MUTED, Align::Right);
+    const char* names[3] = {"G", "H", "S"};
+    float y = c.y + 46;
+    for (int i = 0; i < 3; ++i) {
+        g.text({c.x + 14, y, 12, 16}, names[i], Font::TinyStrong, MUTED);
+        Rect bar{c.x + 30, y + 5, c.w - 44, 6};
+        g.fill_rrect(bar, 3, TRACK);
+        float w = std::round(bar.w * static_cast<float>(pedals[i].first));
+        if (live_ && w >= 2) g.fill_rrect({bar.x, bar.y, w, bar.h}, 3, pedals[i].second);
+        y += 19;
     }
 }
 
-int TabBar::item_at(float x, float y) const {
+int Sidebar::item_at(float x, float y) const {
     for (size_t i = 0; i < rects_.size(); ++i)
         if (rects_[i].contains(x, y)) return static_cast<int>(i);
     return -1;
 }
 
-void TabBar::mouse_move(float x, float y) {
+void Sidebar::mouse_move(float x, float y) {
     int i = item_at(x, y);
     if (i != hover_) {
         hover_ = i;
@@ -1452,14 +2524,156 @@ void TabBar::mouse_move(float x, float y) {
     }
 }
 
-void TabBar::mouse_leave() {
+void Sidebar::mouse_leave() {
     hover_ = -1;
     invalidate();
 }
 
-void TabBar::mouse_down(float x, float y) {
+void Sidebar::mouse_down(float x, float y) {
     int i = item_at(x, y);
     if (i >= 0 && command_) command_(i);
+}
+
+const std::string* Sidebar::tooltip() const {
+    return (compact_ && hover_ >= 0) ? &items_[static_cast<size_t>(hover_)].label : nullptr;
+}
+
+// ----------------------------------------------------------------- TopBar
+
+namespace {
+constexpr float CAPTION_W = 46, CAPTION_H = 34;
+}
+
+TopBar::TopBar(std::function<void(int)> on_caption) : actions_(std::make_unique<Box>(true)), on_caption_(std::move(on_caption)) {
+    actions = actions_.get();
+}
+
+void TopBar::set_title(const std::string& title, const std::string& subtitle) {
+    if (title != title_ || subtitle != subtitle_) {
+        title_ = title;
+        subtitle_ = subtitle;
+        invalidate();
+    }
+}
+
+void TopBar::set_maximized(bool maximized) {
+    if (maximized_ != maximized) {
+        maximized_ = maximized;
+        invalidate();
+    }
+}
+
+Rect TopBar::caption_rect(int caption) const { return {r.right() - static_cast<float>(4 - caption) * CAPTION_W, r.y, CAPTION_W, CAPTION_H}; }
+
+int TopBar::caption_at(float x, float y) const {
+    for (int c = 1; c <= 3; ++c)
+        if (caption_rect(c).contains(x, y)) return c;
+    return 0;
+}
+
+void TopBar::set_caption_hover(int caption) {
+    if (hover_ != caption) {
+        hover_ = caption;
+        invalidate();
+    }
+}
+
+void TopBar::press_caption(int caption) {
+    if (pressed_ != caption) {
+        pressed_ = caption;
+        invalidate();
+    }
+}
+
+void TopBar::arrange(const Rect& rc) {
+    r = rc;
+    float w = actions_->measure(rc.w).w;
+    float h = actions_->measure(w).h;
+    actions_->arrange(snapped({rc.right() - 3 * CAPTION_W - 14 - w, rc.y + (rc.h - h) / 2 + 3, w, h}));
+}
+
+void TopBar::paint(Gfx& g) {
+    float left = r.x + 26;
+    float right_edge = actions_->r.x - 16;
+    float tw = std::max(60.0f, right_edge - left);
+    g.text({left, r.y + 13, tw, 34}, title_, Font::Title, TEXT);
+    g.text({left, r.y + 46, tw, 18}, subtitle_, Font::Small, MUTED);
+    actions_->paint(g);
+
+    const char* glyphs[3] = {ic::min_window, maximized_ ? ic::restore_window : ic::max_window, ic::close_window};
+    for (int c = 1; c <= 3; ++c) {
+        Rect rc = caption_rect(c);
+        bool hot = hover_ == c;
+        if (hot) g.fill_rect(rc, c == 3 ? 0xc42b1c : ELEV, (pressed_ == c) ? 0.8f : 1.0f);
+        g.text(rc, glyphs[c - 1], Font::IconSmall, hot ? WHITE : TEXT_DIM, Align::Center);
+    }
+}
+
+Widget* TopBar::hit_test(float x, float y) {
+    if (!visible || !r.contains(x, y)) return nullptr;
+    if (caption_at(x, y)) return this;
+    return actions_->hit_test(x, y);
+}
+
+void TopBar::mouse_move(float x, float y) { set_caption_hover(caption_at(x, y)); }
+void TopBar::mouse_leave() { set_caption_hover(0); }
+void TopBar::mouse_down(float x, float y) { press_caption(caption_at(x, y)); }
+
+void TopBar::mouse_up(float x, float y) {
+    int c = caption_at(x, y);
+    bool click = c != 0 && c == pressed_;
+    pressed_ = 0;
+    invalidate();
+    if (click && on_caption_) on_caption_(c);
+}
+
+// ---------------------------------------------------------------- Popover
+
+Popover::Popover(WidgetPtr content, const Rect& anchor, float width) : content_(std::move(content)), anchor_(anchor), width_(width) {
+    show_.set(1.0f);
+}
+
+void Popover::arrange(const Rect& rc) {
+    r = rc;
+    float h = content_->measure(width_ - 32).h + 32;
+    float x = clampf(anchor_.right() - width_, 8, rc.w - width_ - 8);
+    float y = anchor_.bottom() + 6;
+    if (y + h > rc.h - 8) y = std::max(8.0f, rc.h - 8 - h);
+    box_ = snapped({x, y, width_, h});
+    content_->arrange(snapped({box_.x + 16, box_.y + 16, width_ - 32, h - 32}));
+}
+
+void Popover::paint(Gfx& g) {
+    animate(show_, 24);
+    float a = show_.value;
+    g.begin_opacity(a);
+    g.push_translate(0, (1 - a) * -6);
+    g.shadow(box_, 14, 18, BLACK, 0.65f, 8);
+    g.fill_rrect(box_, 14, 0x1a202a);
+    g.stroke_rrect(box_, 14, BORDER_HI);
+    content_->paint(g);
+    g.pop_translate();
+    g.end_opacity();
+}
+
+Widget* Popover::hit_test(float x, float y) {
+    if (box_.contains(x, y))
+        if (Widget* hit = content_->hit_test(x, y)) return hit;
+    return this;
+}
+
+void Popover::mouse_down(float x, float y) {
+    if (!box_.contains(x, y)) Ui::get().close_overlay();
+}
+
+void Popover::mouse_rdown(float x, float y) { mouse_down(x, y); }
+
+bool Popover::key_down(unsigned vk) {
+    if (vk == VK_ESCAPE) {
+        Ui::get().close_overlay();
+        return true;
+    }
+    return false;
 }
 
 // -------------------------------------------------------------- PopupMenu
@@ -1469,20 +2683,21 @@ public:
     MenuOverlay(std::string title, std::vector<PopupMenu::Item> items, float x, float y)
         : title_(std::move(title)), items_(std::move(items)) {
         Gfx& g = Gfx::get();
-        float width = 180;
+        float width = 200;
         for (const auto& it : items_) {
             if (it.separator) continue;
-            float w = 24 + g.measure(it.label, Font::SmallBold).width + 24;
-            if (!it.note.empty()) w += g.measure(it.note, Font::Tiny).width + 12;
+            float w = 34 + g.measure(it.label, Font::SmallStrong).width + 24;
+            if (!it.note.empty()) w += g.measure(it.note, Font::Tiny).width + 14;
             width = std::max(width, w);
         }
-        if (!title_.empty()) width = std::max(width, g.measure(title_, Font::TinyBold).width + 26);
-        float height = 2 + (title_.empty() ? 0.0f : TITLE_H + 1);
-        for (const auto& it : items_) height += it.separator ? 7.0f : ROW;
+        if (!title_.empty()) width = std::max(width, g.measure(title_, Font::Caps).width + 34);
+        float height = 12 + (title_.empty() ? 0.0f : TITLE_H);
+        for (const auto& it : items_) height += it.separator ? 9.0f : ROW;
         Size win = Ui::get().window;
         // menu zostaje na ekranie, takze przy kliknieciu przy krawedzi
-        box_ = {std::max(0.0f, std::min(x, win.w - width - 4)), std::max(0.0f, std::min(y, win.h - height - 4)), width, height};
+        box_ = {std::max(4.0f, std::min(x, win.w - width - 6)), std::max(4.0f, std::min(y, win.h - height - 6)), width, height};
         r = {0, 0, win.w, win.h};
+        show_.set(1.0f);
     }
 
     Size measure(float) override { return Ui::get().window; }
@@ -1490,37 +2705,40 @@ public:
     bool hand_cursor() const override { return hover_ >= 0; }
 
     void paint(Gfx& g) override {
-        g.fill_rect(box_, BORDER_HI);
-        Rect in{box_.x + 1, box_.y + 1, box_.w - 2, box_.h - 2};
-        g.fill_rect(in, PANEL_HI);
+        animate(show_, 28);
+        g.begin_opacity(show_.value);
+        g.shadow(box_, 12, 16, BLACK, 0.65f, 7);
+        g.fill_rrect(box_, 12, 0x1f2631);
+        g.stroke_rrect(box_, 12, BORDER_HI);
+        Rect in = box_.inset(6);
         float y = in.y;
         if (!title_.empty()) {
-            g.text({in.x + 12, y, in.w - 24, TITLE_H}, title_, Font::TinyBold, MUTED);
+            g.text({in.x + 10, y, in.w - 20, TITLE_H}, title_, Font::Caps, MUTED);
             y += TITLE_H;
-            g.fill_rect({in.x, y, in.w, 1}, BORDER);
-            y += 1;
         }
         for (size_t i = 0; i < items_.size(); ++i) {
             const auto& it = items_[i];
             if (it.separator) {
-                g.fill_rect({in.x, y + 3, in.w, 1}, BORDER);
-                y += 7;
+                g.fill_rect({in.x + 6, y + 4, in.w - 12, 1}, BORDER_HI, 0.7f);
+                y += 9;
                 continue;
             }
             Rect row{in.x, y, in.w, ROW};
-            if (static_cast<int>(i) == hover_) g.fill_rect(row, ACCENT_DEEP);
-            if (it.checked) g.text({row.x + 6, y, 18, ROW}, "✓", Font::SmallBold, ACCENT, Align::Center);
-            g.text({row.x + 26, y, row.w - 38, ROW}, it.label, it.checked ? Font::SmallBold : Font::Small, TEXT);
-            if (!it.note.empty()) g.text({row.x, y, row.w - 12, ROW}, it.note, Font::Tiny, WARN, Align::Right);
+            if (static_cast<int>(i) == hover_) g.fill_rrect(row, 7, ELEV);
+            if (it.checked) g.text({row.x + 6, y, 20, ROW}, ic::check, Font::IconSmall, ACCENT, Align::Center);
+            g.text({row.x + 32, y, row.w - 44, ROW}, it.label, it.checked ? Font::SmallStrong : Font::Small, TEXT);
+            if (!it.note.empty()) g.text({row.x, y, row.w - 10, ROW}, it.note, Font::Tiny, WARN, Align::Right);
             y += ROW;
         }
+        g.end_opacity();
     }
 
     int item_at(float px, float py) const {
-        if (!box_.contains(px, py)) return -1;
-        float y = box_.y + 1 + (title_.empty() ? 0.0f : TITLE_H + 1);
+        Rect in = box_.inset(6);
+        if (!in.contains(px, py)) return -1;
+        float y = in.y + (title_.empty() ? 0.0f : TITLE_H);
         for (size_t i = 0; i < items_.size(); ++i) {
-            float h = items_[i].separator ? 7.0f : ROW;
+            float h = items_[i].separator ? 9.0f : ROW;
             if (py >= y && py < y + h) return items_[i].separator ? -1 : static_cast<int>(i);
             y += h;
         }
@@ -1557,12 +2775,13 @@ public:
     }
 
 private:
-    static constexpr float ROW = 26;
-    static constexpr float TITLE_H = 26;
+    static constexpr float ROW = 30;
+    static constexpr float TITLE_H = 28;
     std::string title_;
     std::vector<PopupMenu::Item> items_;
     Rect box_;
     int hover_ = -1;
+    Anim show_;
 };
 
 void PopupMenu::add(std::string label, std::function<void()> command, bool checked, std::string note) {

@@ -37,6 +37,10 @@ add_executable(Kierownica WIN32
     src/ui/widgets.cpp
     src/ui/padview.cpp
     src/ui/app.cpp
+    src/ui/page_home.cpp
+    src/ui/page_setup.cpp
+    src/ui/page_assign.cpp
+    src/ui/page_diag.cpp
 )
 target_link_libraries(Kierownica PRIVATE wheelcore d2d1 dwrite windowscodecs winmm gdi32)
 # Common Controls 6 - okna komunikatow w stylu systemu.

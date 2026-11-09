@@ -2,8 +2,23 @@
 
 Ta sama aplikacja co w `../python`, napisana w C++20 na czystym Win32 i
 Direct2D. Wynik to jeden plik `Kierownica.exe` bez zależności: nie trzeba
-Pythona, pyserial ani Pillow. Opis trybów, zakładek i protokołu jest w
-[`../python/README.md`](../python/README.md) - dotyczy obu wersji.
+Pythona, pyserial ani Pillow. Opis trybów i protokołu jest w
+[`../python/README.md`](../python/README.md) - dotyczy obu wersji. Interfejs tej
+wersji jest przebudowany i wygląda inaczej niż w Pythonie.
+
+## Interfejs
+
+* Własna ramka okna: nawigacja boczna (poniżej 1320 px zwija się do ikon), pasek
+  u góry ze stanem łącza, wyborem trybu i zapisem. Działa przyciąganie okna do
+  krawędzi i Snap Layouts.
+* Pulpit: kokpit na żywo, wykres skrętu, momentu i pedałów z ostatnich 10 sekund,
+  stan systemu z przyciskami naprawy.
+* Kierownica i Pedały: krzywą i martwe strefy można przeciągać myszą na wykresie.
+* Przyciski: siatka 32 kafelków i panel szczegółów. Wciśnięcie przycisku na
+  kierownicy wybiera jego kafelek.
+* Suwaki: kliknięcie wartości pozwala ją wpisać, podwójne kliknięcie wraca do
+  domyślnej, strzałki zmieniają o krok.
+* Skróty: `Ctrl+S` zapis, `Ctrl+1..8` zakładki, `Esc` przerywa naukę przycisku.
 
 ## Budowanie
 
@@ -49,7 +64,7 @@ bin\tests\core_tests.exe golden.json
 ## Co jest inaczej niż w wersji Python
 
 * Tekstu dziennika nie da się zaznaczać myszą - służy do tego przycisk
-  **Kopiuj do schowka**.
+  **Kopiuj**.
 * Rozwijane listy i menu nie wychodzą poza okno panelu.
 * Nie ma szukania `ViGEmClient.dll` w pakiecie pip `vgamepad`; biblioteka leży
   w `bin\vigem`.
@@ -63,7 +78,8 @@ bin\tests\core_tests.exe golden.json
 | `src/ui/gfx` | `ui/art.py`, paleta z `ui/theme.py` |
 | `src/ui/widgets` | `ui/widgets.py` |
 | `src/ui/padview` | `ui/padview.py`, `ui/wheelview.py` |
-| `src/ui/app` | `ui/app.py`, `ui/g29tab.py` |
+| `src/ui/app` | okno, pasek u góry i odświeżanie z `ui/app.py` |
+| `src/ui/page_home`, `page_setup`, `page_assign`, `page_diag` | zakładki z `ui/app.py`, `ui/g29tab.py` |
 | `src/json` | moduł `json` Pythona |
 
 Różnica, o której trzeba pamiętać przy zmianach: Python miał GIL, a tu wątki

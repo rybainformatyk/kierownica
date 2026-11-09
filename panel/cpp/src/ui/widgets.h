@@ -1,8 +1,8 @@
 // Widgety interfejsu - wszystko rysowane w jednym oknie (Direct2D).
 //
-// Drzewo: kazdy Widget zna swoj prostokat; kontenery (Box, Grid, Card, Scroll)
-// rozkladaja dzieci. Napisy ustawia sie co klatke - setter porownuje wartosc
-// i dopiero zmiana zamawia przerysowanie okna.
+// Drzewo: kazdy Widget zna swoj prostokat; kontenery (Box, Grid, Columns, Card,
+// Scroll) rozkladaja dzieci. Wartosci ustawia sie co klatke - setter porownuje
+// je i dopiero zmiana zamawia przerysowanie okna.
 #pragma once
 
 #include <array>
@@ -17,8 +17,49 @@
 
 namespace wb::ui {
 
+// Ikony - czcionka Segoe Fluent Icons / MDL2 Assets (te same kody).
+namespace ic {
+inline constexpr const char* check = "";
+inline constexpr const char* cancel = "";
+inline constexpr const char* refresh = "";
+inline constexpr const char* warn = "";
+inline constexpr const char* info = "";
+inline constexpr const char* undo = "";
+inline constexpr const char* save = "";
+inline constexpr const char* copy = "";
+inline constexpr const char* trash = "";
+inline constexpr const char* play = "";
+inline constexpr const char* download = "";
+inline constexpr const char* chevron_down = "";
+inline constexpr const char* chevron_right = "";
+inline constexpr const char* add = "";
+inline constexpr const char* remove = "";
+inline constexpr const char* usb = "";
+inline constexpr const char* car = "";
+inline constexpr const char* game = "";
+inline constexpr const char* bolt = "";
+inline constexpr const char* eye = "";
+inline constexpr const char* link = "";
+inline constexpr const char* target = "";
+inline constexpr const char* power = "";
+inline constexpr const char* min_window = "";
+inline constexpr const char* max_window = "";
+inline constexpr const char* restore_window = "";
+inline constexpr const char* close_window = "";
+} // namespace ic
+
 struct Size {
     float w = 0, h = 0;
+};
+
+// Plynne przejscie wartosci - hover, przesuniecia, wskazniki.
+struct Anim {
+    float value = 0, target = 0;
+    Anim() = default;
+    explicit Anim(float v) : value(v), target(v) {}
+    void set(float t) { target = t; }
+    void snap(float t) { value = target = t; }
+    bool step(float dt, float speed = 18.0f);  // true - jeszcze sie rusza
 };
 
 class Widget {
@@ -36,11 +77,13 @@ public:
     virtual void mouse_down(float, float) {}
     virtual void mouse_up(float, float) {}
     virtual void mouse_rdown(float, float) {}
+    virtual void mouse_dbl(float x, float y) { mouse_down(x, y); }
     virtual bool mouse_wheel(int) { return false; }  // true = obsluzone
     virtual bool key_down(unsigned) { return false; }
     virtual void char_input(wchar_t) {}
     virtual void focus_changed(bool) {}
     virtual bool hand_cursor() const { return false; }
+    virtual const std::string* tooltip() const { return nullptr; }
 
     void set_visible(bool v);
 
@@ -50,7 +93,7 @@ public:
 
 using WidgetPtr = std::unique_ptr<Widget>;
 
-// Globalny stan okna: przerysowanie, nakladki (listy, menu), fokus.
+// Globalny stan okna: przerysowanie, nakladki, fokus, podpowiedzi, powiadomienia.
 class Ui {
 public:
     static Ui& get();
@@ -58,33 +101,57 @@ public:
     void invalidate() { dirty = true; }
     void relayout() { layout_dirty = true; dirty = true; }
 
+    // Nakladki (listy, menu, panele) leza stosem; klik obok zamyka wierzchnia.
     void open_overlay(WidgetPtr overlay);
     void close_overlay();
-    Widget* overlay() { return overlay_.get(); }
+    void close_all_overlays();
+    Widget* overlay();
+    void arrange_overlays();
+    void paint_overlays(Gfx& g);
+
     void set_focus(Widget* w);
     Widget* focus() { return focus_; }
 
     // Odrzucone nakladki kasujemy dopiero poza obsluga zdarzenia.
     void collect_garbage() { trash_.clear(); }
-    bool in_trash(const Widget* w) const {
-        for (const auto& t : trash_)
-            if (t.get() == w) return true;
-        return false;
-    }
+    bool in_trash(const Widget* w) const;
+
+    void toast(std::string text, RGB color = GOOD, const char* icon = ic::check);
+    void tick_toasts(double now);
+    void paint_toasts(Gfx& g);
+
+    void set_tooltip(const std::string* text);
+    void paint_tooltip(Gfx& g);
 
     bool dirty = true;
     bool layout_dirty = true;
     Size window;
     Pt mouse;
+    float dt = 1.0f;     // czas od poprzedniej klatki [s]
+    double time = 0.0;   // czas biezacej klatki [s]
 
 private:
-    WidgetPtr overlay_;
+    struct Toast {
+        std::string text;
+        RGB color;
+        const char* icon;
+        double born;
+        Anim show;
+    };
+    std::vector<WidgetPtr> overlays_;
     std::vector<WidgetPtr> trash_;
+    std::deque<Toast> toasts_;
+    std::string tooltip_;
     Widget* focus_ = nullptr;
 };
 
 inline void invalidate() { Ui::get().invalidate(); }
 inline void relayout() { Ui::get().relayout(); }
+inline void animate(Anim& a, float speed = 18.0f) {
+    if (a.step(Ui::get().dt, speed)) invalidate();
+}
+
+std::string upper_pl(const std::string& s);
 
 // ------------------------------------------------------------- kontenery
 
@@ -119,6 +186,7 @@ private:
     public:
         Size measure(float) override { return {}; }
         void paint(Gfx&) override {}
+        Widget* hit_test(float, float) override { return nullptr; }
     };
     struct Item {
         WidgetPtr w;
@@ -163,6 +231,35 @@ private:
     std::vector<Cell> cells_;
 };
 
+// Kolumny, ktore w waskim oknie przechodza jedna pod druga. Wagi jak w Grid.
+class Columns : public Widget {
+public:
+    Columns(std::vector<float> weights, float min_col, float gap = 16.0f)
+        : weights_(std::move(weights)), min_col_(min_col), gap_(gap) {}
+
+    template <typename T>
+    T* add(std::unique_ptr<T> child) {
+        T* raw = child.get();
+        items_.push_back(std::move(child));
+        relayout();
+        return raw;
+    }
+
+    Size measure(float avail_w) override;
+    void arrange(const Rect& rc) override;
+    void paint(Gfx& g) override;
+    Widget* hit_test(float x, float y) override;
+
+private:
+    int per_row(float w) const;
+    std::vector<float> widths(size_t first, size_t count, float w) const;
+
+    std::vector<float> weights_;
+    float min_col_;
+    float gap_;
+    std::vector<WidgetPtr> items_;
+};
+
 class Card : public Widget {
 public:
     Card(std::string title, std::string subtitle = "", float wrap = 900);
@@ -182,27 +279,34 @@ private:
     std::unique_ptr<Box> right_;
 };
 
-// Plaski pasek u gory zakladek Pad i G29.
-class Strip : public Widget {
+// Wiersz ustawienia: po lewej nazwa i opis, po prawej kontrolka.
+class SettingRow : public Widget {
 public:
-    explicit Strip(std::string title);
-    Box* row;
+    SettingRow(std::string title, std::string desc, WidgetPtr control, float control_w = 0.0f, bool divider = true)
+        : title_(std::move(title)), desc_(std::move(desc)), control_(std::move(control)), control_w_(control_w), divider_(divider) {}
+
     Size measure(float avail_w) override;
     void arrange(const Rect& rc) override;
     void paint(Gfx& g) override;
     Widget* hit_test(float x, float y) override;
 
 private:
-    std::string title_;
-    std::unique_ptr<Box> row_;
+    bool stacked(float w) const;
+    float control_width(float w);
+    float text_width(float w);
+
+    std::string title_, desc_;
+    WidgetPtr control_;
+    float control_w_;
+    bool divider_;
 };
 
 class Scroll : public Widget {
 public:
-    static constexpr float BAR_W = 8;
+    static constexpr float BAR_W = 6;
     static constexpr float GUTTER = 14;
 
-    explicit Scroll(WidgetPtr content) : content_(std::move(content)) {}
+    Scroll(WidgetPtr content, float pad_x = 0, float pad_y = 0) : content_(std::move(content)), pad_x_(pad_x), pad_y_(pad_y) {}
     Widget* content() { return content_.get(); }
 
     Size measure(float avail_w) override { return {avail_w, 0}; }
@@ -213,16 +317,20 @@ public:
     void mouse_down(float x, float y) override;
     void mouse_move(float x, float y) override;
     void mouse_up(float x, float y) override;
+    void mouse_enter() override { hover_ = true; invalidate(); }
+    void mouse_leave() override { hover_ = false; invalidate(); }
 
 private:
     void set_offset(float offset);
     Rect thumb() const;
 
     WidgetPtr content_;
+    float pad_x_, pad_y_;
     float offset_ = 0;
     float content_h_ = 0;
     float wheel_acc_ = 0;
     bool dragging_ = false;
+    bool hover_ = false;
     float drag_y_ = 0;
     float drag_offset_ = 0;
 };
@@ -242,6 +350,7 @@ public:
 private:
     std::vector<WidgetPtr> pages_;
     int current_ = 0;
+    Anim show_{1.0f};
 };
 
 // -------------------------------------------------------------- kontrolki
@@ -274,12 +383,17 @@ private:
 
 class Button : public Widget {
 public:
-    enum Style { Normal, Accent, Small, Ghost };
+    enum Style { Normal, Accent, Small, Ghost, Danger };
     Button(std::string text, Style style, std::function<void()> command, float width = 0);
 
     void set(const std::string& text);
     void set_style(Style s);
     void set_enabled(bool e);
+    void set_icon(const char* icon) { icon_ = icon; }
+    void set_command(std::function<void()> command) { command_ = std::move(command); }
+    void set_tooltip(std::string tip) { tip_ = std::move(tip); }
+    bool enabled() const { return enabled_; }
+
     Size measure(float avail_w) override;
     void paint(Gfx& g) override;
     void mouse_enter() override { hover_ = true; invalidate(); }
@@ -287,22 +401,48 @@ public:
     void mouse_down(float, float) override { pressed_ = true; invalidate(); }
     void mouse_up(float x, float y) override;
     bool hand_cursor() const override { return enabled_; }
+    const std::string* tooltip() const override { return tip_.empty() ? nullptr : &tip_; }
 
 private:
     std::string text_;
+    std::string tip_;
     Style style_;
     std::function<void()> command_;
     float width_;
+    const char* icon_ = nullptr;
     bool enabled_ = true, hover_ = false, pressed_ = false;
+    Anim hover_anim_;
 };
 
-class Checkbox : public Widget {
+class IconButton : public Widget {
 public:
-    Checkbox(std::string text, bool value, std::function<void(bool)> command, Font font = Font::Base);
+    IconButton(const char* icon, std::string tip, std::function<void()> command, float size = 34.0f)
+        : icon_(icon), tip_(std::move(tip)), command_(std::move(command)), size_(size) {}
+
+    Size measure(float) override { return {size_, size_}; }
+    void paint(Gfx& g) override;
+    void mouse_enter() override { hover_ = true; invalidate(); }
+    void mouse_leave() override { hover_ = false; invalidate(); }
+    void mouse_up(float x, float y) override;
+    bool hand_cursor() const override { return true; }
+    const std::string* tooltip() const override { return &tip_; }
+
+private:
+    const char* icon_;
+    std::string tip_;
+    std::function<void()> command_;
+    float size_;
+    bool hover_ = false;
+    Anim hover_anim_;
+};
+
+class Toggle : public Widget {
+public:
+    Toggle(bool value, std::function<void(bool)> command);
 
     bool value() const { return value_; }
     void set(bool v);
-    Size measure(float avail_w) override;
+    Size measure(float) override { return {42, 24}; }
     void paint(Gfx& g) override;
     void mouse_enter() override { hover_ = true; invalidate(); }
     void mouse_leave() override { hover_ = false; invalidate(); }
@@ -310,11 +450,36 @@ public:
     bool hand_cursor() const override { return true; }
 
 private:
-    std::string text_;
     bool value_;
     std::function<void(bool)> command_;
-    Font font_;
     bool hover_ = false;
+    Anim pos_, hover_anim_;
+};
+
+class Segmented : public Widget {
+public:
+    Segmented(std::vector<std::string> items, int index, std::function<void(int)> on_change, float height = 34.0f);
+
+    void set_index(int index);
+    int index() const { return index_; }
+    Size measure(float avail_w) override;
+    void paint(Gfx& g) override;
+    void mouse_move(float x, float y) override;
+    void mouse_leave() override;
+    void mouse_down(float x, float y) override;
+    bool hand_cursor() const override { return hover_ >= 0; }
+
+private:
+    int item_at(float x) const;
+    float item_w() const;
+
+    std::vector<std::string> items_;
+    int index_;
+    std::function<void(int)> on_change_;
+    float height_;
+    int hover_ = -1;
+    Anim pos_;
+    bool placed_ = false;
 };
 
 class Combo : public Widget {
@@ -339,6 +504,7 @@ private:
     std::function<void(int)> on_change_;
     int width_chars_;
     bool hover_ = false;
+    Anim hover_anim_;
 };
 
 class Entry : public Widget {
@@ -360,6 +526,104 @@ private:
     size_t caret_ = 0;
 };
 
+class Stepper : public Widget {
+public:
+    Stepper(int min_value, int max_value, int value, std::function<void(int)> command, std::string zero_text = "");
+
+    int value() const { return value_; }
+    void set(int v);
+    Size measure(float) override { return {132, 34}; }
+    void paint(Gfx& g) override;
+    void mouse_move(float x, float y) override;
+    void mouse_leave() override;
+    void mouse_down(float x, float y) override;
+    bool hand_cursor() const override { return hover_ != 0; }
+
+private:
+    int zone(float x) const;
+    int min_, max_, value_;
+    std::function<void(int)> command_;
+    std::string zero_text_;
+    int hover_ = 0;  // -1 minus, 1 plus
+};
+
+// Pigulka ze stanem; klikalna, gdy ma polecenie.
+class Chip : public Widget {
+public:
+    Chip(std::string text, RGB color, std::function<void()> command = nullptr, bool chevron = false);
+
+    void set(const std::string& text, RGB color);
+    const std::string& text() const { return text_; }
+    void set_spinner(bool on);
+    Size measure(float avail_w) override;
+    void paint(Gfx& g) override;
+    Widget* hit_test(float x, float y) override { return command_ ? Widget::hit_test(x, y) : nullptr; }
+    void mouse_enter() override { hover_ = true; invalidate(); }
+    void mouse_leave() override { hover_ = false; invalidate(); }
+    void mouse_up(float x, float y) override;
+    bool hand_cursor() const override { return command_ != nullptr; }
+
+private:
+    std::string text_;
+    RGB color_;
+    std::function<void()> command_;
+    bool chevron_;
+    bool spinner_ = false;
+    bool hover_ = false;
+    Anim hover_anim_;
+};
+
+// Jak ma wygladac wartosc suwaka i jak ja wpisywac.
+struct Unit {
+    int decimals = 0;
+    const char* suffix = "";
+    double scale = 1.0;
+};
+
+class Slider : public Widget {
+public:
+    Slider(double from, double to, double value, Unit unit, double resolution, std::function<void(double)> command,
+           std::optional<double> default_value = std::nullopt);
+
+    double get() const;
+    void set(double value);                // nie wola callbacku
+    void apply(double value);              // jak ruch uzytkownika
+    double value_at(float x) const;
+
+    Size measure(float avail_w) override { return {avail_w, 30}; }
+    void paint(Gfx& g) override;
+    void mouse_enter() override { hover_ = true; invalidate(); }
+    void mouse_leave() override { hover_ = false; invalidate(); }
+    void mouse_down(float x, float y) override;
+    void mouse_move(float x, float y) override;
+    void mouse_up(float, float) override;
+    void mouse_dbl(float x, float y) override;
+    bool key_down(unsigned vk) override;
+    void char_input(wchar_t c) override;
+    void focus_changed(bool focused) override;
+    bool hand_cursor() const override { return true; }
+
+private:
+    double snap(double v) const;
+    float x_of(double v) const;
+    Rect track_rect() const;
+    Rect bubble_rect() const;
+    Rect reset_rect() const;
+    bool changed() const;
+    void commit_edit();
+    std::string shown() const;
+
+    double from_, to_, value_, resolution_;
+    Unit unit_;
+    std::function<void(double)> command_;
+    std::optional<double> default_;
+    bool hover_ = false, dragging_ = false, editing_ = false;
+    std::string edit_;
+    Anim grow_;
+};
+
+// -------------------------------------------------------------- wskazniki
+
 class StatusDot : public Widget {
 public:
     StatusDot(float size, RGB background) : size_(size), bg_(background) {}
@@ -380,6 +644,7 @@ public:
     explicit StatRow(std::string label) : label_(std::move(label)) {}
     void set(const std::string& value);
     void set(const std::string& value, RGB color);
+    const std::string& value() const { return value_; }
     Size measure(float avail_w) override;
     void paint(Gfx& g) override;
     Widget* hit_test(float, float) override { return nullptr; }
@@ -390,52 +655,23 @@ private:
     RGB color_ = TEXT;
 };
 
-class Slider : public Widget {
+// Kafelek z duza liczba i opcjonalnym wykresem historii.
+class StatTile : public Widget {
 public:
-    using Format = std::function<std::string(double)>;
-    Slider(std::string label, double from, double to, double value, Format fmt, double resolution,
-           std::function<void(double)> command, std::string hint = "");
-
-    double get() const;
-    void set(double value);                // nie wola callbacku
-    void apply(double value);              // jak ruch uzytkownika
-    double value_at(float x) const;
-
-    Size measure(float avail_w) override;
-    void paint(Gfx& g) override;
-    Widget* hit_test(float x, float y) override;
-    void mouse_enter() override { hover_ = true; invalidate(); }
-    void mouse_leave() override { hover_ = false; invalidate(); }
-    void mouse_down(float x, float y) override;
-    void mouse_move(float x, float y) override;
-    void mouse_up(float, float) override;
-    bool hand_cursor() const override { return true; }
-
-private:
-    double snap(double v) const;
-    float x_of(double v) const;
-    Rect track_rect() const;
-
-    std::string label_, hint_;
-    double from_, to_, value_, resolution_;
-    Format fmt_;
-    std::function<void(double)> command_;
-    bool hover_ = false, dragging_ = false;
-};
-
-class BarMeter : public Widget {
-public:
-    BarMeter(std::string label, RGB color) : label_(std::move(label)), color_(color) {}
-    void set(double value, std::optional<int> raw);
-    Size measure(float avail_w) override;
+    StatTile(std::string label, bool spark = false);
+    void set(const std::string& value, RGB color = TEXT);
+    void push(double value, double scale_max);
+    Size measure(float avail_w) override { return {avail_w, spark_ ? 112.0f : 76.0f}; }
     void paint(Gfx& g) override;
     Widget* hit_test(float, float) override { return nullptr; }
 
 private:
     std::string label_;
-    RGB color_;
-    double value_ = 0;
-    std::optional<int> raw_;
+    std::string value_ = "-";
+    RGB color_ = TEXT;
+    bool spark_;
+    std::deque<double> data_;
+    double top_ = 1;
 };
 
 class TorqueMeter : public Widget {
@@ -451,17 +687,19 @@ private:
     double value_ = 0;
 };
 
-class PedalGauge : public Widget {
+class PedalBar : public Widget {
 public:
-    PedalGauge(std::string label, RGB color) : label_(std::move(label)), color_(color) {}
+    PedalBar(std::string label, RGB color, float width, float bar_h)
+        : label_(std::move(label)), color_(color), width_(width), bar_h_(bar_h) {}
     void set(double value, std::optional<int> raw, bool enabled);
-    Size measure(float avail_w) override;
+    Size measure(float) override;
     void paint(Gfx& g) override;
     Widget* hit_test(float, float) override { return nullptr; }
 
 private:
     std::string label_;
     RGB color_;
+    float width_, bar_h_;
     double value_ = 0;
     std::optional<int> raw_;
     bool enabled_ = true;
@@ -491,50 +729,61 @@ private:
     int dir_ = -1;
 };
 
-class Sparkline : public Widget {
+// Wykres krzywej odpowiedzi - krawedzie martwych stref i sama krzywa mozna
+// chwycic mysza. Wspolrzedne funkcji: 0..1, a w trybie bipolar -1..1.
+class CurveEditor : public Widget {
 public:
-    Sparkline(float height, RGB color) : height_(height), color_(color) {}
-    void push(double value, double scale_max);
-    Size measure(float avail_w) override { return {avail_w, height_}; }
-    void paint(Gfx& g) override;
-    Widget* hit_test(float, float) override { return nullptr; }
+    struct Handlers {
+        std::function<void(double)> low, high, gamma;
+    };
+    CurveEditor(float height, RGB color, bool bipolar, std::array<std::string, 3> captions, Handlers handlers = {});
 
-private:
-    float height_;
-    RGB color_;
-    std::deque<double> data_;
-    double top_ = 1;
-    static constexpr size_t POINTS = 90;
-};
-
-class CurvePlot : public Widget {
-public:
-    CurvePlot(float height, RGB color, bool bipolar, std::array<std::string, 3> captions);
-    void set_curve(const std::string& key, std::function<double(double)> fn,
-                   std::vector<std::pair<double, double>> shade = {});
+    void set_curve(std::function<double(double)> fn);
+    void set_params(double dz_low, double dz_high, double gamma);
     void set_marker(std::optional<std::pair<double, double>> xy);
     void set_captions(const std::string& left, const std::string& middle, const std::string& right);
+    void set_color(RGB color);
 
-    Size measure(float avail_w) override { return {avail_w, height_ + 18}; }
+    Size measure(float avail_w) override { return {avail_w, height_ + 20}; }
     void paint(Gfx& g) override;
-    Widget* hit_test(float, float) override { return nullptr; }
+    void mouse_move(float x, float y) override;
+    void mouse_leave() override;
+    void mouse_down(float x, float y) override;
+    void mouse_up(float, float) override;
+    bool hand_cursor() const override { return hover_ != None; }
 
 private:
-    Pt to_px(double x, double y, float w) const;
-    Sprite render(float w);
+    enum Part { None, Low, High, Curve };
+    Part part_at(float x, float y) const;
+    Pt to_px(double x, double y) const;
+    void drag_to(float x, float y);
 
     float height_;
     RGB color_;
     bool bipolar_;
     std::array<std::string, 3> captions_;
-    std::string key_;
+    Handlers h_;
     std::function<double(double)> fn_;
-    std::vector<std::pair<double, double>> shade_;
+    double dz_low_ = 0, dz_high_ = 0, gamma_ = 1;
     std::optional<std::pair<double, double>> marker_;
-    Sprite sprite_;
-    std::string drawn_key_;
-    float drawn_w_ = 0;
-    uint64_t drawn_gen_ = 0;
+    Part hover_ = None, drag_ = None;
+};
+
+// Surowy zakres ADC: co skalibrowane, co widziano i gdzie jest pedal.
+class RangeBar : public Widget {
+public:
+    explicit RangeBar(RGB color) : color_(color) {}
+    void set(int cal_min, int cal_max, std::optional<int> raw, std::optional<std::pair<int, int>> seen);
+    void set_color(RGB color);
+    Size measure(float avail_w) override { return {avail_w, 50}; }
+    void paint(Gfx& g) override;
+    Widget* hit_test(float, float) override { return nullptr; }
+
+private:
+    RGB color_;
+    int cal_min_ = 0, cal_max_ = 4095;
+    std::optional<int> raw_;
+    std::optional<std::pair<int, int>> seen_;
 };
 
 class WheelDial : public Widget {
@@ -542,7 +791,7 @@ public:
     explicit WheelDial(float size) : size_(size) {}
     void set_range(double degrees);
     void set_angle(double degrees);
-    Size measure(float) override { return {size_, size_ + 62}; }
+    Size measure(float) override { return {size_, size_}; }
     void paint(Gfx& g) override;
     Widget* hit_test(float, float) override { return nullptr; }
 
@@ -553,40 +802,27 @@ private:
     double deg_ = 0;
 };
 
-class TextView : public Widget {
+// Telemetria na zywo: ostatnie sekundy jazdy jako przesuwane wykresy.
+class TraceChart : public Widget {
 public:
-    TextView(int rows, bool follow) : rows_(rows), follow_(follow) {}
-    void clear();
-    void set_lines(const std::vector<std::string>& lines, RGB color);
-    void append(const std::string& line, RGB color);
-    void set_rows(int rows);
-    std::string joined() const;
-
-    Size measure(float avail_w) override;
-    void paint(Gfx& g) override;
-    Widget* hit_test(float x, float y) override { return Widget::hit_test(x, y); }
-    bool mouse_wheel(int delta) override;
-
-private:
-    struct Line {
-        std::string text;
+    struct Series {
+        std::string name;
         RGB color;
+        int lane;
+        bool area;
     };
-    float line_height();
-    std::deque<Line> lines_;
-    int rows_;
-    bool follow_;
-    float offset_ = 0;
-    float content_h_ = 0;
-};
+    struct Lane {
+        std::string title;
+        bool bipolar;
+        float weight;
+    };
+    static constexpr size_t MAX_SERIES = 6;
 
-class TabBar : public Widget {
-public:
-    TabBar(std::vector<std::string> labels, std::vector<std::string> icons, std::function<void(int)> command);
-    void select(int index);
+    TraceChart(std::vector<Series> series, std::vector<Lane> lanes, float height, double window_s = 10.0);
+    void push(double now, const std::array<float, MAX_SERIES>& values, bool repaint);
+    void set_live(bool live);
 
-    Size measure(float avail_w) override;
-    void arrange(const Rect& rc) override;
+    Size measure(float avail_w) override { return {avail_w, height_}; }
     void paint(Gfx& g) override;
     void mouse_move(float x, float y) override;
     void mouse_leave() override;
@@ -594,24 +830,193 @@ public:
     bool hand_cursor() const override { return hover_ >= 0; }
 
 private:
-    int item_at(float x, float y) const;
-    std::vector<std::string> labels_, icons_;
-    std::vector<Rect> rects_;
-    std::function<void(int)> command_;
-    int selected_ = 0, hover_ = -1;
+    struct Sample {
+        double t;
+        std::array<float, MAX_SERIES> v;
+    };
+    int legend_at(float x, float y) const;
+    float legend_x(size_t index) const;
+
+    std::vector<Series> series_;
+    std::vector<Lane> lanes_;
+    float height_;
+    double window_;
+    std::deque<Sample> samples_;
+    std::array<bool, MAX_SERIES> shown_;
+    double now_ = 0;
+    bool live_ = false;
+    int hover_ = -1;
 };
 
-// Pionowa kreska albo pozioma linia.
-class Rule : public Widget {
+class TextView : public Widget {
 public:
-    Rule(RGB color, float w, float h) : color_(color), w_(w), h_(h) {}
-    Size measure(float avail_w) override { return {w_ > 0 ? w_ : avail_w, h_}; }
-    void paint(Gfx& g) override { g.fill_rect(r, color_); }
-    Widget* hit_test(float, float) override { return nullptr; }
+    TextView(int rows, bool follow) : rows_(rows), follow_(follow) {}
+    void clear();
+    void set_lines(const std::vector<std::string>& lines, RGB color);
+    void append(const std::string& line, RGB color, int level = 0);
+    void set_rows(int rows);
+    void set_filter(int min_level);   // 0 wszystko, 1 ostrzezenia i bledy, 2 bledy
+    std::string joined() const;
+
+    Size measure(float avail_w) override;
+    void paint(Gfx& g) override;
+    bool mouse_wheel(int delta) override;
 
 private:
-    RGB color_;
-    float w_, h_;
+    struct Line {
+        std::string text;
+        RGB color;
+        int level;
+    };
+    float line_height();
+    std::deque<Line> lines_;
+    int rows_;
+    bool follow_;
+    int min_level_ = 0;
+    float offset_ = 0;
+    float content_h_ = 0;
+};
+
+// Duzy kafelek wyboru (tryb wyjscia).
+class ModeTile : public Widget {
+public:
+    ModeTile(const char* icon, std::string title, std::string desc, std::function<void()> command);
+    void set_selected(bool selected);
+    Size measure(float avail_w) override;
+    void paint(Gfx& g) override;
+    void mouse_enter() override { hover_ = true; invalidate(); }
+    void mouse_leave() override { hover_ = false; invalidate(); }
+    void mouse_up(float x, float y) override;
+    bool hand_cursor() const override { return true; }
+
+private:
+    const char* icon_;
+    std::string title_, desc_;
+    std::function<void()> command_;
+    bool selected_ = false, hover_ = false;
+    Anim sel_anim_, hover_anim_;
+};
+
+enum class Level { Off, Ok, Warn, Bad, Busy };
+
+// Wiersz listy stanu: ikona, opis i - gdy jest co naprawic - przycisk.
+class StatusLine : public Widget {
+public:
+    StatusLine();
+    void set(Level level, const std::string& title, const std::string& detail);
+    void set_action(const std::string& text, std::function<void()> command);
+    Level level() const { return level_; }
+    const std::string& title() const { return title_; }
+
+    Size measure(float avail_w) override;
+    void arrange(const Rect& rc) override;
+    void paint(Gfx& g) override;
+    Widget* hit_test(float x, float y) override;
+
+private:
+    float action_w();
+    Level level_ = Level::Off;
+    std::string title_, detail_;
+    std::unique_ptr<Button> action_;
+};
+
+// ------------------------------------------------------------------ powloka
+
+class Sidebar : public Widget {
+public:
+    struct Item {
+        std::string label, icon, group;
+    };
+    static constexpr float WIDE = 232, COMPACT = 76;
+
+    Sidebar(std::vector<Item> items, std::function<void(int)> command);
+    void select(int index);
+    void set_badge(int index, const std::string& text, RGB color);
+    void set_compact(bool compact);
+    bool compact() const { return compact_; }
+    float width() const { return compact_ ? COMPACT : WIDE; }
+    void set_cluster(bool live, double deg, double range, double throttle, double brake, double clutch);
+    bool is_drag_area(float x, float y) const;
+
+    Size measure(float) override { return {width(), 0}; }
+    void arrange(const Rect& rc) override;
+    void paint(Gfx& g) override;
+    void mouse_move(float x, float y) override;
+    void mouse_leave() override;
+    void mouse_down(float x, float y) override;
+    bool hand_cursor() const override { return hover_ >= 0; }
+    const std::string* tooltip() const override;
+
+private:
+    int item_at(float x, float y) const;
+    void paint_cluster(Gfx& g);
+
+    std::vector<Item> items_;
+    std::vector<Rect> rects_;
+    std::vector<std::pair<float, std::string>> headers_;
+    std::vector<std::pair<std::string, RGB>> badges_;
+    std::function<void(int)> command_;
+    int selected_ = 0, hover_ = -1;
+    bool compact_ = false;
+    Anim indicator_;
+    bool indicator_placed_ = false;
+    std::vector<Anim> hover_anim_;
+    Rect cluster_;
+    bool show_cluster_ = true;
+    bool live_ = false;
+    double deg_ = 0, range_ = 900, throttle_ = 0, brake_ = 0, clutch_ = 0;
+};
+
+class TopBar : public Widget {
+public:
+    static constexpr float HEIGHT = 76;
+    explicit TopBar(std::function<void(int)> on_caption);
+
+    Box* actions;
+    void set_title(const std::string& title, const std::string& subtitle);
+    void set_maximized(bool maximized);
+    int caption_at(float x, float y) const;   // 0 brak, 1 minimalizuj, 2 maksymalizuj, 3 zamknij
+    void set_caption_hover(int caption);
+    void press_caption(int caption);
+
+    Size measure(float avail_w) override { return {avail_w, HEIGHT}; }
+    void arrange(const Rect& rc) override;
+    void paint(Gfx& g) override;
+    Widget* hit_test(float x, float y) override;
+    void mouse_move(float x, float y) override;
+    void mouse_leave() override;
+    void mouse_down(float x, float y) override;
+    void mouse_up(float x, float y) override;
+
+private:
+    Rect caption_rect(int caption) const;
+    std::string title_, subtitle_;
+    std::unique_ptr<Box> actions_;
+    std::function<void(int)> on_caption_;
+    bool maximized_ = false;
+    int hover_ = 0, pressed_ = 0;
+};
+
+// ----------------------------------------------------------------- nakladki
+
+// Panel zakotwiczony pod elementem - np. wybor portu albo trybu.
+class Popover : public Widget {
+public:
+    Popover(WidgetPtr content, const Rect& anchor, float width);
+
+    Size measure(float) override { return Ui::get().window; }
+    void arrange(const Rect& rc) override;
+    void paint(Gfx& g) override;
+    Widget* hit_test(float x, float y) override;
+    void mouse_down(float x, float y) override;
+    void mouse_rdown(float x, float y) override;
+    bool key_down(unsigned vk) override;
+
+private:
+    WidgetPtr content_;
+    Rect anchor_, box_;
+    float width_;
+    Anim show_;
 };
 
 // Ciemne menu podreczne w kolorach panelu.
@@ -633,8 +1038,6 @@ private:
     std::string title_;
     std::vector<Item> items_;
 };
-
-std::string upper_pl(const std::string& s);
 
 inline constexpr const char* OFFLINE_LIVE = "Podgląd na żywo ruszy po połączeniu z płytką.";
 
