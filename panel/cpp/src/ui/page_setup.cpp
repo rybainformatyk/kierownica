@@ -48,7 +48,9 @@ std::unique_ptr<Widget> WheelPage::build() {
     // --- lewa kolumna ---
     auto left = mk<Box>(false);
     auto c1 = mk<Card>("Zakres obrotu");
-    presets_ = c1->body->add(mk<Segmented>(preset_labels(), preset_index(cfg.steer.range_deg), [this](int i) { app_.set_range(RANGE_PRESETS[static_cast<size_t>(i)]); }), Pack{.bottom = 8});
+    presets_ = c1->body->add(mk<Segmented>(preset_labels(), preset_index(cfg.steer.range_deg), [this](int i) { app_.set_range(RANGE_PRESETS[static_cast<size_t>(i)]); }), Pack{.bottom = 12});
+    ruler_ = c1->body->add(mk<RangeRuler>(), Pack{.bottom = 6});
+    ruler_->set_range(cfg.steer.range_deg);
     range_ = bind_slider_int(c1->body, "Zakres lock-to-lock", "Tyle stopni ma pełny obrót od oporu do oporu. G29 ma fabrycznie 900°.", 90, 1800, &cfg.steer.range_deg, DEG, 10, d.range_deg,
                              [this] { app_.engine().apply_config(); });
     left->add(std::move(c1), Pack{.bottom = 16});
@@ -138,6 +140,8 @@ void WheelPage::refresh(const Frame& f, bool visible) {
     AppConfig& cfg = app_.cfg();
     sync();
     presets_->set_index(preset_index(cfg.steer.range_deg));
+    ruler_->set_range(cfg.steer.range_deg);
+    ruler_->set_angle(f.live ? std::optional<double>(f.state->steer_deg) : std::nullopt);
     axis_combo_->set_index(index_of(VJOY_AXIS_CHOICES, cfg.steer.vjoy_axis));
     if (Ui::get().focus() != cpr_) cpr_->set(std::to_string(cfg.steer.counts_per_rev));
 

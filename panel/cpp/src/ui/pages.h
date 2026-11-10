@@ -118,6 +118,7 @@ private:
     void detect_cpr();
 
     Segmented* presets_ = nullptr;
+    RangeRuler* ruler_ = nullptr;
     Slider* range_ = nullptr;
     Entry* cpr_ = nullptr;
     CurveEditor* curve_ = nullptr;

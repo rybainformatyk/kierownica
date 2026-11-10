@@ -1120,7 +1120,7 @@ protocol::HelloInfo make_hello() {
 
 } // namespace
 
-bool PanelApp::render_png(const fs::path& file) {
+bool PanelApp::render_png(const fs::path& file, float dt) {
     ComPtr<IWICImagingFactory> wic;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return false;
     Ui& ui = Ui::get();
@@ -1137,7 +1137,7 @@ bool PanelApp::render_png(const fs::path& file) {
     g.drop_resources();
     shared = rt;
     ui.relayout();
-    ui.dt = 1.0f;  // animacje od razu w stanie koncowym
+    ui.dt = dt;  // domyslnie animacje od razu w stanie koncowym
     ui.time = monotonic();
     // druga klatka: animacje dostaja koncowe wartosci ustawione w pierwszej
     render_to(rt.Get());
@@ -1212,6 +1212,18 @@ bool PanelApp::selftest_checks(std::string& report) {
             Sleep(4);
         }
         shot(std::format("tab_{}_{}", tab, TABS[static_cast<size_t>(tab)].name));
+    }
+    // --- zmiana zakresu: skala dojezdza plynnie, a nie przeskakuje ---
+    for (int tab : {TAB_DASH, TAB_STEER}) {
+        go_tab(tab);
+        refresh();
+        shot("zakres_przed");  // ustawia animacje w stanie koncowym
+        set_range(270);
+        refresh();
+        check(render_png(options_.selftest_dir / widen(std::format("zakres_w_ruchu_{}.png", tab)), 0.05f), "render zakresu w ruchu");
+        refresh();
+        set_range(900);
+        refresh();
     }
     drain_log();
     check(!log_has("Błąd odświeżania") && !log_has("Błąd w oknie"), "brak bledow odswiezania w dzienniku");

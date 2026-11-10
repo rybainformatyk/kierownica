@@ -23,7 +23,35 @@ Rect snapped(const Rect& rc) {
     return {x, y, std::round(rc.right()) - x, std::round(rc.bottom()) - y};
 }
 
+float smoothstep(float lo, float hi, float v) {
+    float t = clampf((v - lo) / (hi - lo), 0, 1);
+    return t * t * (3 - 2 * t);
+}
+
+// Najwiekszy krok podzialki, przez ktory dzieli sie kat (wielokrotnosc 10 st.).
+// Kreski rzadszego kroku sa dluzsze i zostaja, gdy gestsze sie zlewaja.
+int tick_step(int deg) {
+    for (int step : {360, 180, 90, 30})
+        if (deg % step == 0) return step;
+    return 10;
+}
+
 } // namespace
+
+bool Spring::step(float dt, float omega, float rest) {
+    if (value == target && velocity == 0) return false;
+    // rozwiazanie scisle - stabilne takze przy dlugiej klatce
+    float d = value - target;
+    float c = velocity + omega * d;
+    float e = std::exp(-omega * dt);
+    value = target + (d + c * dt) * e;
+    velocity = (velocity - omega * c * dt) * e;
+    if (std::abs(target - value) < rest && std::abs(velocity) < rest * omega) {
+        snap(target);
+        return false;
+    }
+    return true;
+}
 
 bool Anim::step(float dt, float speed) {
     if (value == target) return false;
@@ -881,15 +909,18 @@ void Segmented::paint(Gfx& g) {
     }
     if (index_ >= 0) {
         pos_.set(static_cast<float>(index_));
-        animate(pos_, 20);
+        if (pos_.step(Ui::get().dt, 20.0f, 0.002f)) invalidate();
         Rect sel{r.x + 2 + pos_.value * w, r.y + 2, w, r.h - 4};
+        g.shadow(sel, 8, 8, ACCENT, 0.28f, 1);
         g.fill_rrect_v(sel, 8, ACCENT_HI, ACCENT);
     }
     for (int i = 0; i < static_cast<int>(items_.size()); ++i) {
         Rect cell{r.x + 2 + static_cast<float>(i) * w, r.y + 2, w, r.h - 4};
         bool sel = i == index_;
         if (!sel && i == hover_) g.fill_rrect(cell.inset(1), 7, ELEV);
-        g.text(cell, items_[static_cast<size_t>(i)], Font::SmallStrong, sel ? ACCENT_INK : (i == hover_ ? TEXT : TEXT_DIM), Align::Center);
+        // napis ciemnieje, gdy wjezdza pod niego znacznik wyboru
+        float under = index_ >= 0 ? clampf(1.0f - std::abs(static_cast<float>(i) - pos_.value), 0, 1) : 0.0f;
+        g.text(cell, items_[static_cast<size_t>(i)], Font::SmallStrong, mix(i == hover_ ? TEXT : TEXT_DIM, ACCENT_INK, under), Align::Center);
     }
 }
 
@@ -1326,7 +1357,14 @@ void Slider::paint(Gfx& g) {
     float cy = t.y + t.h / 2;
     Rect groove{t.x + 2, cy - 2.5f, t.w - 4, 5};
     g.fill_rrect(groove, 2.5f, TRACK);
-    float x = x_of(value_);
+    // wartosc zmieniona z zewnatrz (preset, reset) - uchwyt dojezdza; pod mysza idzie od razu
+    double span = to_ - from_;
+    float frac = std::abs(span) < 1e-9 ? 0.0f : clampf(static_cast<float>((value_ - from_) / span), 0, 1);
+    if (dragging_ || !placed_) pos_.snap(frac);
+    placed_ = true;
+    pos_.set(frac);
+    if (pos_.step(Ui::get().dt, 22.0f, 0.0015f)) invalidate();
+    float x = x_of(from_ + span * pos_.value);
     if (x > groove.x + 2) g.fill_rrect_h({groove.x, groove.y, x - groove.x, groove.h}, 2.5f, ACCENT_DIM, ACCENT);
     if (default_) {
         float dx = x_of(*default_);
@@ -1886,8 +1924,17 @@ void RangeBar::paint(Gfx& g) {
 
 void WheelDial::set_range(double degrees) {
     degrees = std::max(1.0, degrees);
-    if (std::abs(degrees - range_) >= 0.5) {
+    if (!placed_) {
+        // pierwsza wartosc bez animacji
+        placed_ = true;
         range_ = degrees;
+        shown_.snap(static_cast<float>(degrees));
+        invalidate();
+    } else if (std::abs(degrees - range_) >= 0.5) {
+        range_ = degrees;
+        shown_.set(static_cast<float>(degrees));
+        flash_.snap(1.0f);
+        flash_.set(0.0f);
         invalidate();
     }
 }
@@ -1901,92 +1948,277 @@ void WheelDial::set_angle(double degrees) {
 }
 
 Sprite WheelDial::wheel_sprite(RGB marker) {
+    // Obraca sie razem z kierownica, wiec bez swiatla z gory - to doklada
+    // nieruchoma nakladka z light_sprite().
     float s = size_;
-    float rim_r = s / 2 - 36;
-    float rim_w = std::max(13.0f, s / 15);
-    int half = static_cast<int>(std::ceil(rim_r + rim_w)) + 8;
+    float rim_w = std::max(13.0f, s / 15.5f);
+    float rim_o = s / 2 - 34, rim_i = rim_o - rim_w, rim_r = rim_o - rim_w / 2;
+    int half = static_cast<int>(std::ceil(rim_o)) + 10;
     Paint p(half * 2, half * 2);
     float c = static_cast<float>(half);
-    float rim_o = rim_r + rim_w / 2, rim_i = rim_r - rim_w / 2;
     Shape rim = Shape::ring(c, c, rim_o, rim_i, 0, 360);
-    p.shadow(rim, 0, 5, 170);
+    p.shadow(rim, 0, 6, 190);
 
-    // ramiona zwezaja sie ku obreczy
-    float hub = std::max(26.0f, s / 8.5f);
+    // ramiona: sfazowane aluminium z wyfrezowanym oknem
+    float hub = std::max(22.0f, s / 8.5f);
     for (float deg : {0.0f, 180.0f, 90.0f}) {
         float a = deg * PI / 180.0f;
         float ca = std::cos(a), sa = std::sin(a);
         float nx = -sa, ny = ca;
-        float w0 = hub * 0.72f, w1 = rim_w * 0.85f;
+        float w0 = hub * 0.78f, w1 = rim_w * 0.82f;
         float r0 = hub * 0.5f, r1 = rim_i + 3;
-        std::vector<Pt> poly = {{c + ca * r0 + nx * w0, c + sa * r0 + ny * w0}, {c + ca * r1 + nx * w1, c + sa * r1 + ny * w1},
-                                {c + ca * r1 - nx * w1, c + sa * r1 - ny * w1}, {c + ca * r0 - nx * w0, c + sa * r0 - ny * w0}};
-        Shape spoke = Shape::poly(poly);
-        p.gradient(spoke, 0x39414f, 0x1d222c);
-        p.stroke(spoke, WHITE, 1.0f, 18);
+        // czworokat wzdluz ramienia: od ulamka t0 do t1 dlugosci, k - czesc szerokosci
+        auto quad = [&](float t0, float t1, float k) {
+            float ra = r0 + (r1 - r0) * t0, rb = r0 + (r1 - r0) * t1;
+            float wa = (w0 + (w1 - w0) * t0) * k, wb = (w0 + (w1 - w0) * t1) * k;
+            return Shape::poly({{c + ca * ra + nx * wa, c + sa * ra + ny * wa}, {c + ca * rb + nx * wb, c + sa * rb + ny * wb},
+                                {c + ca * rb - nx * wb, c + sa * rb - ny * wb}, {c + ca * ra - nx * wa, c + sa * ra - ny * wa}});
+        };
+        p.fill(quad(0, 1, 1), 0x262c36);
+        p.fill(quad(0, 1, 0.78f), 0x465061);
+        p.stroke(quad(0, 1, 1), WHITE, 1.0f, 26);
+        Shape window = quad(0.50f, 0.86f, 0.42f);
+        p.fill(window, 0x0d1015);
+        p.stroke(window, BLACK, 1.0f, 150);
     }
 
-    p.gradient(rim, 0x4d5667, 0x1a1f28);
-    p.sheen(rim, 46, 0.38f);
+    // obrecz: skora, po bokach perforowane uchwyty
+    p.fill(rim, 0x2b313b);
+    for (float ctr : {0.0f, 180.0f}) {
+        Shape grip = Shape::ring(c, c, rim_o - 1, rim_i + 1, ctr - 42, ctr + 42);
+        p.fill(grip, 0x191d24);
+        int row = 0;
+        for (float rr = rim_i + 4; rr <= rim_o - 3.5f; rr += 3.4f, ++row)
+            for (float deg = ctr - 39 + (row % 2 ? 1.6f : 0.0f); deg <= ctr + 39; deg += 3.2f) {
+                float a = deg * PI / 180.0f;
+                p.fill(Shape::circle(c + rr * std::cos(a), c + rr * std::sin(a), 0.75f), BLACK, 130);
+            }
+        for (float deg : {ctr - 42, ctr + 42}) {
+            float a = deg * PI / 180.0f;
+            p.line({{c + (rim_i + 1.5f) * std::cos(a), c + (rim_i + 1.5f) * std::sin(a)}, {c + (rim_o - 1.5f) * std::cos(a), c + (rim_o - 1.5f) * std::sin(a)}},
+                   0x9aa5b8, 1.2f, 150, false);
+        }
+    }
     p.stroke(Shape::circle(c, c, rim_o), WHITE, 1.0f, 26);
+    p.arc(c, c, rim_i + 0.8f, 0, 360, BLACK, 1.6f, 110);
+    // szew na gorze i na dole, miedzy uchwytami
     for (int k = 0; k < 96; ++k) {
-        float a = static_cast<float>(k) * 3.75f * PI / 180.0f, b = (static_cast<float>(k) * 3.75f + 1.7f) * PI / 180.0f;
-        p.line({{c + rim_r * std::cos(a), c + rim_r * std::sin(a)}, {c + rim_r * std::cos(b), c + rim_r * std::sin(b)}}, WHITE, 0.9f, 30);
+        float deg = static_cast<float>(k) * 3.75f;
+        float off = std::fmod(deg + 44.0f, 180.0f);
+        if (off < 88.0f) continue;  // pod uchwytem
+        float a = deg * PI / 180.0f, b = (deg + 1.7f) * PI / 180.0f;
+        p.line({{c + rim_r * std::cos(a), c + rim_r * std::sin(a)}, {c + rim_r * std::cos(b), c + rim_r * std::sin(b)}}, WHITE, 0.9f, 44);
     }
 
-    // piasta
+    // piasta ze srubami - po nich widac obrot takze w srodku
     Shape boss = Shape::circle(c, c, hub);
-    p.shadow(boss, 2, 5, 170);
-    p.gradient(boss, 0x343c4a, 0x161b23);
-    p.stroke(boss, WHITE, 1.0f, 22);
-    Shape cap = Shape::circle(c, c, hub * 0.62f);
-    p.gradient(cap, 0x202631, 0x12161d);
-    p.stroke(cap, mix(ACCENT_DIM, marker, 0.6), 2.0f);
-    p.fill(Shape::circle(c, c, hub * 0.14f), marker);
+    p.shadow(boss, 2, 5, 180);
+    p.fill(boss, 0x2a303a);
+    p.stroke(boss, WHITE, 1.0f, 24);
+    for (int k = 0; k < 6; ++k) {
+        float a = (static_cast<float>(k) * 60.0f + 30.0f) * PI / 180.0f;
+        Shape bolt = Shape::circle(c + hub * 0.80f * std::cos(a), c + hub * 0.80f * std::sin(a), std::max(1.6f, hub * 0.075f));
+        p.fill(bolt, 0x8a94a6);
+        p.stroke(bolt, BLACK, 0.8f, 170);
+    }
 
     // pasek "gora kierownicy" na obreczy
+    p.glow(Shape::rrect(c - 3.5f, c - rim_o + 1, c + 3.5f, c - rim_i - 1, 1), marker, 4, 110);
     p.line({{c, c - rim_o + 1}, {c, c - rim_i - 1}}, marker, 7, 255, false);
+    p.line({{c - 1.5f, c - rim_o + 2}, {c - 1.5f, c - rim_i - 2}}, WHITE, 1.0f, 90, false);
+    return p.finish();
+}
+
+// Swiatlo z gory i srodek piasty - nie obracaja sie z kierownica.
+Sprite WheelDial::light_sprite(RGB marker) {
+    float s = size_, c = s / 2;
+    float rim_w = std::max(13.0f, s / 15.5f);
+    float rim_o = s / 2 - 34, rim_i = rim_o - rim_w;
+    float hub = std::max(22.0f, s / 8.5f);
+    Paint p(static_cast<int>(s), static_cast<int>(s));
+    Shape rim = Shape::ring(c, c, rim_o, rim_i, 0, 360);
+    p.sheen(rim, 62, 0.42f);
+    p.arc(c, c, rim_o - 1.2f, 215, 325, WHITE, 1.2f, 46);
+    p.sheen(Shape::circle(c, c, hub), 44, 0.55f);
+    Shape cap = Shape::circle(c, c, hub * 0.60f);
+    p.glow(cap, marker, 4, 70);
+    p.gradient(cap, 0x1c222c, 0x0e1116);
+    p.stroke(cap, mix(ACCENT_DIM, marker, 0.7), 2.0f);
+    p.stroke(Shape::circle(c, c, hub * 0.34f), WHITE, 1.0f, 26);
+    p.fill(Shape::circle(c, c, hub * 0.13f), marker);
     return p.finish();
 }
 
 void WheelDial::paint(Gfx& g) {
     float s = size_;
     float c = s / 2;
-    const float sweep = 135.0f;
-    const float ring_w = 9;
-    float rad = s / 2 - 12;
     float cx = r.x + c, cy = r.y + c;
+    const float band_c = c - 17;  // srodek pasa, po ktorym biegnie tor
 
-    // rowek gauge'a z podzialka - przerwa na dole
+    if (shown_.step(Ui::get().dt, 9.0f)) invalidate();
+    animate(flash_, 2.6f);
+    float fl = flash_.value;
+
+    // Tor jest w prawdziwych stopniach kierownicy: 270 to luk, 900 to dwa i
+    // pol zwoju spirali. Zmiana zakresu nawija go albo odwija.
+    float range = std::max(1.0f, shown_.value);
+    float half = range / 2.0f;
+    float turns = range / 360.0f;
+    float pitch = std::min(10.0f, 20.0f / turns) * smoothstep(0.80f, 0.98f, turns);  // odstep zwojow [px]
+    float lane = turns >= 1.0f ? clampf(pitch - 3.0f, 2.0f, 4.5f) : 5.5f - smoothstep(0.8f, 1.0f, turns);
+    auto spot = [&](float deg, float off = 0.0f) {
+        float a = (deg - 90.0f) * PI / 180.0f;
+        float rad = band_c + pitch * deg / 360.0f + off;
+        return Pt{cx + rad * std::cos(a), cy + rad * std::sin(a)};
+    };
+    auto path = [&](float from, float to) {
+        if (from > to) std::swap(from, to);
+        int steps = std::max(2, static_cast<int>((to - from) / 3.0f) + 1);
+        std::vector<Pt> pts;
+        pts.reserve(static_cast<size_t>(steps) + 1);
+        for (int i = 0; i <= steps; ++i) pts.push_back(spot(from + (to - from) * static_cast<float>(i) / static_cast<float>(steps)));
+        return pts;
+    };
+
+    // tarcza: siatka katow co 30 st. i znacznik srodka
     const Sprite& base = g.cached("dial/" + std::to_string(static_cast<int>(s)), [&] {
         Paint p(static_cast<int>(s), static_cast<int>(s));
-        p.arc(c, c, rad, -90.0f - sweep, -90.0f + sweep, TRACK, ring_w);
-        for (int i = -4; i <= 4; ++i) {
-            float a = (-90.0f + static_cast<float>(i) * sweep / 4.0f) * PI / 180.0f;
-            float r1 = rad - ring_w / 2 - 4, r0 = r1 - ((i % 2 == 0) ? 8.0f : 4.0f);
-            p.line({{c + r0 * std::cos(a), c + r0 * std::sin(a)}, {c + r1 * std::cos(a), c + r1 * std::sin(a)}},
-                   (i % 2 == 0) ? MUTED : BORDER_HI, (i % 2 == 0) ? 1.8f : 1.2f);
+        Shape face = Shape::circle(c, c, c - 1);
+        p.gradient(face, 0x151a23, 0x0b0e13);
+        p.stroke(face, WHITE, 1.0f, 14);
+        for (int k = 0; k < 12; ++k) {
+            float a = static_cast<float>(k) * 30.0f * PI / 180.0f;
+            bool major = k % 3 == 0;
+            float r0 = band_c - 12, r1 = band_c + 12;
+            p.line({{c + r0 * std::cos(a), c + r0 * std::sin(a)}, {c + r1 * std::cos(a), c + r1 * std::sin(a)}}, major ? BORDER_HI : BORDER, 1.0f, major ? 190 : 150, false);
         }
-        p.fill(Shape::poly({{c, c - rad + ring_w / 2 + 1}, {c - 5, c - rad - ring_w / 2 - 5}, {c + 5, c - rad - ring_w / 2 - 5}}), TEXT_DIM);
+        p.fill(Shape::poly({{c, 6.5f}, {c - 4.5f, 0.5f}, {c + 4.5f, 0.5f}}), TEXT_DIM);
         return p.finish();
     });
     g.draw_sprite(base, r.x, r.y);
 
-    double half = range_ / 2.0;
-    double frac = std::max(-1.0, std::min(1.0, deg_ / half));
-    bool over = std::abs(deg_) > half + 0.5;
-    double near_end = std::rint(std::min(1.0, std::max(0.0, (std::abs(frac) - 0.75) / 0.25)) * 4) / 4;
+    float pos = clampf(static_cast<float>(deg_), -half, half);
+    bool over = std::abs(deg_) > range_ / 2.0 + 0.5;
+    double near_end = std::rint(std::min(1.0, std::max(0.0, (std::abs(pos) / half - 0.75) / 0.25)) * 4) / 4;
     RGB color = over ? BAD : mix(ACCENT, WARN, near_end);
 
-    if (std::abs(frac) > 0.003) {
-        float a0 = -90.0f, a1 = -90.0f + static_cast<float>(frac) * sweep;
-        if (a0 > a1) std::swap(a0, a1);
-        g.arc(cx, cy, rad, a0, a1, color, ring_w + 9, 0.14f);
-        g.arc(cx, cy, rad, a0, a1, color, ring_w);
+    std::vector<Pt> track = path(-half, half);
+    if (fl > 0.01f) g.polyline(track, ACCENT, lane + 7, 0.16f * fl);
+    g.polyline(track, mix(TRACK, 0x34404f, 0.5), lane);
+
+    // konce toru swieca, dopoki zakres sie zmienia
+    if (fl > 0.01f)
+        for (float side : {-1.0f, 1.0f}) {
+            float tail = std::min(half, 26.0f + 60.0f * fl);
+            g.polyline(path(side * (half - tail), side * half), ACCENT_HI, lane, 0.85f * fl);
+        }
+
+    if (std::abs(pos) > 0.4f) {
+        std::vector<Pt> arc = path(0, pos);
+        g.polyline(arc, color, lane + 8, 0.14f);
+        g.polyline(arc, color, lane);
     }
+
+    // opory: konce toru, podpisy w rogach
+    RGB stop = over ? BAD : mix(TEXT_DIM, ACCENT_HI, fl);
+    for (float side : {-1.0f, 1.0f}) {
+        Pt a = spot(side * half, -lane / 2 - 2.5f), b = spot(side * half, lane / 2 + 2.5f);
+        g.line(a.x, a.y, b.x, b.y, stop, 2.4f);
+        g.text_at(side < 0 ? r.x + 26 : r.right() - 26, r.bottom() - 9, std::format("{}{:.0f}°", side < 0 ? "−" : "+", half), Font::TinyStrong, over ? BAD : mix(MUTED, ACCENT_HI, fl));
+    }
+
+    Pt head = spot(pos);
+    g.fill_circle(head.x, head.y, 10, color, 0.20f);
+    g.fill_circle(head.x, head.y, 6, color);
+    g.fill_circle(head.x, head.y, 2.5f, WHITE);
 
     const Sprite& wheel = g.cached(std::format("dial-wheel/{}/{:06x}", static_cast<int>(s), color), [&] { return wheel_sprite(color); });
     g.draw_sprite_rotated(wheel, cx, cy, static_cast<float>(deg_));
+    const Sprite& light = g.cached(std::format("dial-light/{}/{:06x}", static_cast<int>(s), color), [&] { return light_sprite(color); });
+    g.draw_sprite(light, r.x, r.y);
+}
+
+// ------------------------------------------------------------- RangeRuler
+
+void RangeRuler::set_range(double degrees) {
+    degrees = std::max(1.0, degrees);
+    if (!placed_) {
+        placed_ = true;
+        range_ = degrees;
+        shown_.snap(static_cast<float>(degrees));
+        invalidate();
+    } else if (std::abs(degrees - range_) >= 0.5) {
+        range_ = degrees;
+        shown_.set(static_cast<float>(degrees));
+        flash_.snap(1.0f);
+        flash_.set(0.0f);
+        invalidate();
+    }
+}
+
+void RangeRuler::set_angle(std::optional<double> degrees) {
+    if (degrees && *degrees != *degrees) degrees = 0.0;
+    if (degrees.has_value() != deg_.has_value() || (degrees && std::abs(*degrees - *deg_) >= 0.2)) {
+        deg_ = degrees;
+        invalidate();
+    }
+}
+
+void RangeRuler::paint(Gfx& g) {
+    if (shown_.step(Ui::get().dt)) invalidate();
+    animate(flash_, 3.2f);
+    float fl = flash_.value;
+
+    Rect field{r.x, r.y, r.w, 50};
+    if (fl > 0.01f) g.shadow(field, 10, 9, ACCENT, 0.22f * fl);
+    g.fill_rrect_v(field, 10, 0x171d27, 0x141923);
+    g.stroke_rrect(field, 10, mix(BORDER, ACCENT, fl * 0.8));
+
+    float half = std::max(0.5f, shown_.value / 2.0f);
+    float mid = std::round(field.x + field.w / 2);
+    float span = std::max(20.0f, field.w / 2 - 16);
+    float per_deg = span / half;
+    float top = field.y + 7, label_y = field.y + 29;
+
+    // kreski na stalych katach: zmiana zakresu przesuwa je i wymienia podpisy
+    int last = static_cast<int>(half / 10.0f) * 10;
+    for (int d = -last; d <= last; d += 10) {
+        float spacing = static_cast<float>(d == 0 ? 360 : tick_step(std::abs(d))) * per_deg;  // odstep sasiadow [px]
+        float edge = (half - static_cast<float>(std::abs(d))) * per_deg;
+        float alpha = smoothstep(5.0f, 10.0f, spacing) * clampf(edge / 8.0f, 0, 1);
+        if (alpha < 0.02f) continue;
+        float big = smoothstep(26.0f, 60.0f, spacing);
+        float x = std::round(mid + static_cast<float>(d) * per_deg) + 0.5f;
+        g.line(x, top, x, top + 4 + 8 * big, mix(BORDER_HI, TEXT_DIM, big), 1.0f, alpha);
+        float label = smoothstep(52.0f, 84.0f, spacing) * alpha * clampf((edge - 48.0f) / 16.0f, 0, 1);
+        if (label > 0.02f) g.text_at(x, label_y, d == 0 ? std::string("0°") : std::format("{:+d}°", d), Font::Tiny, MUTED, label);
+    }
+
+    // opory
+    bool over = deg_ && std::abs(*deg_) > range_ / 2.0 + 0.5;
+    RGB stop = over ? BAD : mix(TEXT_DIM, ACCENT_HI, fl);
+    for (float side : {-1.0f, 1.0f}) {
+        float x = std::round(mid + side * span);
+        g.fill_rect({x - 1, top, 2, 14}, stop);
+    }
+    Rect labels{field.x + 12, label_y - 8, field.w - 24, 16};
+    g.text(labels, std::format("−{:.0f}°", half), Font::TinyStrong, stop);
+    g.text(labels, std::format("+{:.0f}°", half), Font::TinyStrong, stop, Align::Right);
+
+    // gdzie jest kierownica
+    Rect track{mid - span, field.bottom() - 9, span * 2, 3};
+    g.fill_rrect(track, 1.5f, TRACK);
+    g.fill_rect({mid - 0.5f, track.y - 2, 1, track.h + 4}, BORDER_HI);
+    if (deg_) {
+        float frac = clampf(static_cast<float>(*deg_) / half, -1, 1);
+        float x = mid + frac * span;
+        RGB color = over ? BAD : ACCENT;
+        if (std::abs(x - mid) >= 1) g.fill_rrect({std::min(mid, x), track.y, std::abs(x - mid), track.h}, 1.5f, color);
+        float cy = track.y + track.h / 2;
+        g.fill_circle(x, cy, 8, color, 0.22f);
+        g.fill_circle(x, cy, 4.5f, color);
+        g.fill_circle(x, cy, 2, WHITE);
+    }
 }
 
 // ------------------------------------------------------------- TraceChart
@@ -2384,6 +2616,9 @@ void Sidebar::set_cluster(bool live, double deg, double range, double throttle, 
         live_ = live;
         deg_ = deg;
         range_ = range;
+        if (range_placed_) range_shown_.set(static_cast<float>(range));
+        else range_shown_.snap(static_cast<float>(range));
+        range_placed_ = true;
         throttle_ = throttle;
         brake_ = brake;
         clutch_ = clutch;
@@ -2497,7 +2732,10 @@ void Sidebar::paint_cluster(Gfx& g) {
         return;
     }
     g.text({c.x + 14, c.y + 8, c.w - 28, 30}, angle, Font::NumLarge, TEXT);
-    g.text({c.x + 14, c.y + 8, c.w - 28, 30}, std::format("z {:.0f}°", range_), Font::Tiny, MUTED, Align::Right);
+    bool moving = range_placed_ && range_shown_.step(Ui::get().dt);
+    if (moving) invalidate();
+    g.text({c.x + 14, c.y + 8, c.w - 28, 30}, std::format("z {:.0f}°", range_placed_ ? range_shown_.value : static_cast<float>(range_)), Font::Tiny,
+           moving ? ACCENT_HI : MUTED, Align::Right);
     const char* names[3] = {"G", "H", "S"};
     float y = c.y + 46;
     for (int i = 0; i < 3; ++i) {

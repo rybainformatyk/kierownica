@@ -62,6 +62,15 @@ struct Anim {
     bool step(float dt, float speed = 18.0f);  // true - jeszcze sie rusza
 };
 
+// Sprezyna z tlumieniem krytycznym - lagodny start i koniec, bez przeskoku.
+// Do wartosci, ktorych zmiane ma byc widac jako ruch (zakres, wskaznik wyboru).
+struct Spring {
+    float value = 0, target = 0, velocity = 0;
+    void set(float t) { target = t; }
+    void snap(float t) { value = target = t; velocity = 0; }
+    bool step(float dt, float omega = 13.0f, float rest = 0.05f);  // true - jeszcze sie rusza
+};
+
 class Widget {
 public:
     virtual ~Widget() = default;
@@ -478,7 +487,7 @@ private:
     std::function<void(int)> on_change_;
     float height_;
     int hover_ = -1;
-    Anim pos_;
+    Spring pos_;
     bool placed_ = false;
 };
 
@@ -620,6 +629,8 @@ private:
     bool hover_ = false, dragging_ = false, editing_ = false;
     std::string edit_;
     Anim grow_;
+    Spring pos_;     // polozenie uchwytu 0..1
+    bool placed_ = false;
 };
 
 // -------------------------------------------------------------- wskazniki
@@ -791,15 +802,39 @@ public:
     explicit WheelDial(float size) : size_(size) {}
     void set_range(double degrees);
     void set_angle(double degrees);
+    // Zakres w trakcie animacji - do napisow obok tarczy.
+    double shown_range() const { return placed_ ? shown_.value : range_; }
     Size measure(float) override { return {size_, size_}; }
     void paint(Gfx& g) override;
     Widget* hit_test(float, float) override { return nullptr; }
 
 private:
     Sprite wheel_sprite(RGB marker);
+    Sprite light_sprite(RGB marker);
     float size_;
     double range_ = 900;
     double deg_ = 0;
+    Spring shown_;   // zakres, ktory widac - dogania range_
+    Anim flash_;     // blysk skali po zmianie zakresu
+    bool placed_ = false;
+};
+
+// Linijka zakresu: podzialka w stopniach rozciaga sie i sciska razem z
+// zakresem, a znacznik pokazuje, gdzie jest kierownica.
+class RangeRuler : public Widget {
+public:
+    void set_range(double degrees);
+    void set_angle(std::optional<double> degrees);
+    Size measure(float avail_w) override { return {avail_w, 52}; }
+    void paint(Gfx& g) override;
+    Widget* hit_test(float, float) override { return nullptr; }
+
+private:
+    double range_ = 900;
+    std::optional<double> deg_;
+    Spring shown_;
+    Anim flash_;
+    bool placed_ = false;
 };
 
 // Telemetria na zywo: ostatnie sekundy jazdy jako przesuwane wykresy.
@@ -965,6 +1000,8 @@ private:
     bool show_cluster_ = true;
     bool live_ = false;
     double deg_ = 0, range_ = 900, throttle_ = 0, brake_ = 0, clutch_ = 0;
+    Spring range_shown_;
+    bool range_placed_ = false;
 };
 
 class TopBar : public Widget {

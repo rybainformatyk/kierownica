@@ -607,10 +607,13 @@ void PadCanvas::build_parts() {
 
     // przyciski A B X Y: blyszczaca czern z wytloczona litera
     float fx = CX + FACE_C.x, fy = CY + FACE_C.y, off = FACE_OFFSET;
-    struct Face { const char* name; float ox, oy; };
-    for (const Face& f : {Face{"Y", 0, -off}, Face{"X", -off, 0}, Face{"B", off, 0}, Face{"A", 0, off}}) {
+    // (litery w kolorach z listy przypisan - latwiej trafic wzrokiem)
+    struct Face { const char* name; float ox, oy; RGB color; };
+    for (const Face& f : {Face{"Y", 0, -off, 0xf0c419}, Face{"X", -off, 0, 0x3f9be8}, Face{"B", off, 0, 0xe8534a}, Face{"A", 0, off, 0x5ac25a}}) {
         float x = fx + f.ox, y = fy + f.oy;
-        add(f.name, Shape::circle(x, y, FACE_R), gloss, text_glyph(x, y + 0.5f, f.name, 12, true));
+        CapStyle style = gloss;
+        style.glyph = lighten(f.color, 0.12);
+        add(f.name, Shape::circle(x, y, FACE_R), style, text_glyph(x, y + 0.5f, f.name, 12, true));
     }
 
     // View i Menu: male blyszczace przyciski z jasnymi ikonami
@@ -858,23 +861,52 @@ void WheelCanvas::paint_body(Paint& p) {
     // obrecz z gumy: cien, gradient, polysk i przeszycie
     Shape rim = Shape::ring(WCX, WCY, RIM_OUT, RIM_IN, -90, 270);
     p.shadow(rim, 10, 10, 170);
-    p.gradient(rim, 0x3a4250, 0x161a21);
-    p.sheen(rim, 40, 0.35f);
+    p.gradient(rim, 0x424a59, 0x14181e);
+    // uchwyty po bokach: ciemniejsza, perforowana skora z przeszyciem na koncach
+    for (float ctr : {0.0f, 180.0f}) {
+        Shape grip = Shape::ring(WCX, WCY, RIM_OUT - 1, RIM_IN + 1, ctr - 40, ctr + 40);
+        p.gradient(grip, 0x2a303a, 0x0f1217);
+        int row = 0;
+        for (float rr = RIM_IN + 5; rr <= RIM_OUT - 4.5f; rr += 4.0f, ++row)
+            for (float deg = ctr - 37 + (row % 2 ? 1.2f : 0.0f); deg <= ctr + 37; deg += 2.4f)
+                p.fill(Shape::circle(WCX + rr * std::cos(rad(deg)), WCY + rr * std::sin(rad(deg)), 0.8f), BLACK, 130);
+        for (float deg : {ctr - 40, ctr + 40})
+            p.line({{WCX + (RIM_IN + 2) * std::cos(rad(deg)), WCY + (RIM_IN + 2) * std::sin(rad(deg))},
+                    {WCX + (RIM_OUT - 2) * std::cos(rad(deg)), WCY + (RIM_OUT - 2) * std::sin(rad(deg))}}, 0x9aa5b8, 1.3f, 150, false);
+    }
+    p.sheen(rim, 46, 0.35f);
     float mid = (RIM_OUT + RIM_IN) / 2;
     for (int k = 0; k < 120; ++k) {
-        float a = rad(static_cast<float>(k) * 3.0f), b = rad(static_cast<float>(k) * 3.0f + 1.4f);
-        p.line({{WCX + mid * std::cos(a), WCY + mid * std::sin(a)}, {WCX + mid * std::cos(b), WCY + mid * std::sin(b)}}, WHITE, 0.9f, 28);
+        float deg = static_cast<float>(k) * 3.0f;
+        if (std::fmod(deg + 42.0f, 180.0f) < 84.0f) continue;  // pod uchwytem szwu nie ma
+        float a = rad(deg), b = rad(deg + 1.4f);
+        p.line({{WCX + mid * std::cos(a), WCY + mid * std::sin(a)}, {WCX + mid * std::cos(b), WCY + mid * std::sin(b)}}, WHITE, 0.9f, 40);
     }
-    p.stroke(Shape::circle(WCX, WCY, RIM_OUT), WHITE, 1.0f, 30);
+    p.stroke(Shape::circle(WCX, WCY, RIM_OUT), WHITE, 1.0f, 34);
+    p.arc(WCX, WCY, RIM_IN + 0.9f, 0, 360, BLACK, 1.8f, 120);
 
-    // plyta z przyciskami i dolne ramie - jedna bryla
+    // plyta z przyciskami i dolne ramie - jedna bryla ze szczotkowanego aluminium
     Shape plate = Shape::rrect(WCX + PLATE[0], WCY + PLATE[1], WCX + PLATE[2], WCY + PLATE[3], PLATE[4]);
     Shape spoke = Shape::rrect(WCX + SPOKE[0], WCY + SPOKE[1], WCX + SPOKE[2], WCY + SPOKE[3], SPOKE[4]);
     for (const Shape* s : {&spoke, &plate}) p.shadow(*s, 6, 7, 170);
     float top = WCY + PLATE[1], bottom = WCY + SPOKE[3];
-    for (const Shape* s : {&spoke, &plate}) p.gradient(*s, 0x4b5568, 0x262d38, top, bottom);
-    p.sheen(plate, 34, 0.5f);
-    p.stroke(plate, WHITE, 1.0f, 30);
+    for (const Shape* s : {&spoke, &plate}) {
+        p.gradient(*s, 0x515c70, 0x242a34, top, bottom);
+        p.push_clip(*s);
+        for (float y = top + 1; y < bottom; y += 2.5f) p.line({{WCX - 130, y}, {WCX + 130, y}}, WHITE, 0.5f, 10, false);
+        p.pop_clip();
+    }
+    p.sheen(plate, 38, 0.5f);
+    p.stroke(plate, WHITE, 1.0f, 34);
+    p.stroke(plate.grow(-4), BLACK, 1.0f, 50);
+    // sruby w rogach plyty
+    for (float sx : {-113.0f, 113.0f})
+        for (float sy : {-39.0f, 43.0f}) {
+            Shape screw = Shape::circle(WCX + sx, WCY + sy, 2.8f);
+            p.gradient(screw, 0x8a94a6, 0x2b313b);
+            p.stroke(screw, BLACK, 0.8f, 160);
+            p.line({{WCX + sx - 1.6f, WCY + sy - 1.0f}, {WCX + sx + 1.6f, WCY + sy + 1.0f}}, BLACK, 0.9f, 170, false);
+        }
     p.text(WCX, WCY - 10, "G29", 9, 0x8a95a8, true);
 
     // wglebienia pod krzyzakiem i pokretlem
@@ -989,7 +1021,11 @@ void WheelCanvas::paint_overlay(Gfx& g) {
         double v = pedals_[static_cast<size_t>(pedal_index(spot.key))];
         v = v != v ? 0.0 : std::max(0.0, std::min(1.0, v));
         float len = static_cast<float>(v) * span;
-        if (len >= 2) g.fill_rect({ox + WCX + spot.x - h, oy + WCY + PEDAL_BOTTOM - 3 - len, 2 * h, len}, spot.color);
+        if (len >= 2) {
+            Rect fill{ox + WCX + spot.x - h, oy + WCY + PEDAL_BOTTOM - 3 - len, 2 * h, len};
+            g.shadow(fill, h, 6, spot.color, 0.30f);
+            g.fill_rrect_v(fill, h, lighten(spot.color, 0.22), mix(spot.color, BG, 0.25));
+        }
         g.text_at(ox + WCX + spot.x, oy + WCY + PEDAL_BOTTOM + 12, spot.text, Font::Micro, MUTED);
     }
     g.text_at(ox + WCX + PEDALS[1].x, oy + WCY + PEDAL_TOP - 16, "PEDAŁY", Font::TinyBold, MUTED);
