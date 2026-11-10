@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 
+#include "../embedded.h"
 #include "../util.h"
 
 namespace fs = std::filesystem;
@@ -160,7 +161,9 @@ std::vector<fs::path> candidate_dirs() {
     DWORD n = GetEnvironmentVariableW(L"VIGEM_DIR", buf, 32768);
     if (n > 0 && n < 32768) dirs.emplace_back(buf);
 
-    // katalog vigem/ dolaczony do aplikacji - podstawowa sciezka
+    // biblioteka wbudowana w program - podstawowa sciezka
+    if (auto embedded_dir = embedded::vigem_dir()) dirs.push_back(*embedded_dir);
+
     fs::path app = exe_dir();
     dirs.push_back(app / L"vigem" / ARCH);
     dirs.push_back(app / L"vigem");
@@ -221,7 +224,7 @@ ViGEmDiagnostics vigem_diagnostics() {
     info.bits = BITS;
     auto path = find_vigem_dll();
     if (!path) {
-        info.error = "Nie znaleziono ViGEmClient.dll. Powinien leżeć w katalogu vigem/ obok aplikacji.";
+        info.error = "Nie znaleziono ViGEmClient.dll. Nie udało się rozpakować go z programu do %LOCALAPPDATA%\\Kierownica.";
         return info;
     }
     info.dll_path = narrow(path->wstring());
@@ -255,7 +258,7 @@ void XInputBackend::open() {
     auto path = find_vigem_dll();
     if (!path) {
         throw ViGEmNotAvailable("Nie znaleziono ViGEmClient.dll.\n\n"
-                                "Biblioteka powinna leżeć w katalogu 'vigem' obok programu (podkatalog x64).");
+                                "Nie udało się rozpakować jej z programu do %LOCALAPPDATA%\\Kierownica.");
     }
     ViGEmApi* api = load_api(*path);
 

@@ -615,10 +615,10 @@ void WheelEngine::handle_hello(const protocol::HelloInfo& hello) {
     }
     g29_hide_warned_.store(false);
     if (live()->output.g29_on() && !hello.has_g29())
-        log("warn", std::format("Firmware {} nie ma trybu G29 - wgraj firmware {} (firmware/kierownica)",
+        log("warn", std::format("Firmware {} nie ma trybu G29 - wgraj firmware {} (Diagnostyka → Wgraj firmware)",
                                 hello.firmware(), protocol::FW_LATEST_TEXT));
     else if (hello.outdated())
-        log("info", std::format("Płytka ma firmware {}, w firmware/kierownica jest {}", hello.firmware(),
+        log("info", std::format("Płytka ma firmware {}, w panelu jest {}", hello.firmware(),
                                 protocol::FW_LATEST_TEXT));
 }
 

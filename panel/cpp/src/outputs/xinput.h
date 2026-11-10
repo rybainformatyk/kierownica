@@ -4,8 +4,8 @@
 // wylacznie XInput i w ogole nie widzi urzadzen DirectInput. Ten backend
 // pokazuje te sama kierownice jako zwyklego pada Xbox.
 //
-// Potrzebny jest sterownik ViGEmBus i biblioteka ViGEmClient.dll z katalogu
-// vigem/ obok programu. Spusty Xboxa sa 8-bitowe, drazki 16-bitowe.
+// Potrzebny jest sterownik ViGEmBus i biblioteka ViGEmClient.dll, wbudowana
+// w program (embedded.h). Spusty Xboxa sa 8-bitowe, drazki 16-bitowe.
 #pragma once
 
 #include <cstdint>

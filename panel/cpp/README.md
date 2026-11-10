@@ -29,8 +29,12 @@ są w pakiecie).
 build.bat
 ```
 
-Wynik trafia do `bin\`: `Kierownica.exe`, katalog `vigem\` z biblioteką pada
-i `tests\core_tests.exe`.
+Wynik trafia do `bin\`: `Kierownica.exe` i `tests\core_tests.exe`. Do działania
+panelu wystarczy sam `Kierownica.exe` - biblioteka pada i firmware są w nim
+wbudowane i rozpakowują się do `%LOCALAPPDATA%\Kierownica`.
+
+Nie da się wbudować sterowników systemowych: tryb vJoy wymaga instalacji vJoy,
+tryb pada instalacji ViGEmBus. Wgrywanie firmware wymaga Arduino IDE 2.
 
 ## Uruchomienie
 
@@ -66,8 +70,8 @@ bin\tests\core_tests.exe golden.json
 * Tekstu dziennika nie da się zaznaczać myszą - służy do tego przycisk
   **Kopiuj**.
 * Rozwijane listy i menu nie wychodzą poza okno panelu.
-* Nie ma szukania `ViGEmClient.dll` w pakiecie pip `vgamepad`; biblioteka leży
-  w `bin\vigem`.
+* Nie ma szukania `ViGEmClient.dll` w pakiecie pip `vgamepad`; biblioteka jest
+  wbudowana w program.
 
 ## Układ kodu
 
@@ -81,6 +85,7 @@ bin\tests\core_tests.exe golden.json
 | `src/ui/app` | okno, pasek u góry i odświeżanie z `ui/app.py` |
 | `src/ui/page_home`, `page_setup`, `page_assign`, `page_diag` | zakładki z `ui/app.py`, `ui/g29tab.py` |
 | `src/json` | moduł `json` Pythona |
+| `src/embedded`, `src/kierownica.rc` | nowe: pliki wbudowane w `.exe` |
 
 Różnica, o której trzeba pamiętać przy zmianach: Python miał GIL, a tu wątki
 naprawdę działają równolegle. Konfigurację zmienia wyłącznie wątek interfejsu,

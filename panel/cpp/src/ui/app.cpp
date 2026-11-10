@@ -13,6 +13,7 @@
 #include <format>
 #include <fstream>
 
+#include "../embedded.h"
 #include "../json.h"
 #include "../util.h"
 #include "../winsys.h"
@@ -49,19 +50,6 @@ const std::array<TabInfo, TAB_COUNT> TABS = {{
     {"Force Feedback", "Moment, efekty i bezpieczeństwo", "", "Wyjście"},
     {"Diagnostyka", "Łącze, sterowniki i dziennik", "", "System"},
 }};
-
-fs::path firmware_script() {
-    // panel/cpp/bin -> katalog repozytorium; szukamy w gore, bo program moze lezec gdzie indziej
-    fs::path dir = exe_dir();
-    for (int i = 0; i < 6; ++i) {
-        fs::path candidate = dir / L"firmware" / L"kierownica" / L"wgraj_firmware.bat";
-        std::error_code ec;
-        if (fs::is_regular_file(candidate, ec)) return candidate;
-        if (!dir.has_parent_path() || dir.parent_path() == dir) break;
-        dir = dir.parent_path();
-    }
-    return exe_dir().parent_path().parent_path().parent_path() / L"firmware" / L"kierownica" / L"wgraj_firmware.bat";
-}
 
 std::string time_stamp() {
     std::time_t t = std::time(nullptr);
@@ -242,19 +230,16 @@ void PanelApp::inform(const char* title, const std::string& text, UINT icon) {
     if (hwnd_) MessageBoxW(hwnd_, widen(text).c_str(), widen(title).c_str(), MB_OK | icon);
 }
 
-bool PanelApp::firmware_available() const {
-    std::error_code ec;
-    return fs::is_regular_file(firmware_script(), ec);
-}
+bool PanelApp::firmware_available() const { return embedded::has_firmware(); }
 
 void PanelApp::flash_firmware() {
     if (flash_proc_) return;
-    fs::path script = firmware_script();
-    if (!firmware_available()) {
-        inform("Wgraj firmware", "Nie znaleziono skryptu:\n" + narrow(script.wstring()), MB_ICONWARNING);
+    fs::path script = embedded::firmware_script().value_or(fs::path{});
+    if (script.empty()) {
+        inform("Wgraj firmware", "Nie udało się rozpakować plików firmware z programu do %LOCALAPPDATA%\\Kierownica.", MB_ICONWARNING);
         return;
     }
-    if (!ask("Wgraj firmware", std::format("Wgrać firmware {} z katalogu firmware/kierownica?\n\nPanel rozłączy się z płytką na czas wgrywania "
+    if (!ask("Wgraj firmware", std::format("Wgrać firmware {} na płytkę?\n\nPanel rozłączy się z płytką na czas wgrywania "
                                            "(gra straci kierownicę) i połączy się ponownie, gdy zamkniesz okno wgrywania.", protocol::FW_LATEST_TEXT)))
         return;
     // Port z dzialajacego polaczenia - skrypt sam szuka tylko oryginalnego Due
@@ -499,7 +484,7 @@ std::string PanelApp::output_hint(bool connected, const EngineStatus& st) const 
     }
     auto hello = engine_->hello();
     if (connected && hello && hello->outdated())
-        return std::format("Płytka ma firmware {}, a w firmware/kierownica czeka {} - wgraj go (Diagnostyka → Wgraj firmware), żeby mieć wszystkie funkcje panelu.",
+        return std::format("Płytka ma firmware {}, a w panelu czeka {} - wgraj go (Diagnostyka → Wgraj firmware), żeby mieć wszystkie funkcje panelu.",
                            hello->firmware(), protocol::FW_LATEST_TEXT);
     return "";
 }
@@ -1194,6 +1179,17 @@ bool PanelApp::selftest_checks(std::string& report) {
         if (!keep_toasts) Ui::get().tick_toasts(monotonic() + 1000.0);
         check(render_png(options_.selftest_dir / widen(name + ".png")), "render " + name);
     };
+
+    // --- program nie potrzebuje niczego obok siebie ---
+    {
+        std::error_code ec;
+        auto vigem = embedded::vigem_dir();
+        check(vigem && fs::is_regular_file(*vigem / L"ViGEmClient.dll", ec), "wbudowany ViGEmClient.dll rozpakowany");
+        auto script = embedded::firmware_script();
+        check(script && fs::is_regular_file(*script, ec) && fs::is_regular_file(script->parent_path() / L"kierownica.ino", ec) &&
+                  fs::is_regular_file(script->parent_path() / L"g29_usb.h", ec) && fs::is_regular_file(script->parent_path() / L"wgraj_firmware.ps1", ec),
+              "wbudowany firmware rozpakowany");
+    }
 
     // --- bez plytki: to widac po pierwszym uruchomieniu ---
     for (int tab : {TAB_DASH, TAB_PEDALS, TAB_G29, TAB_PAD}) {
