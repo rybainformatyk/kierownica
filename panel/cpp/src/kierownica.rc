@@ -1,0 +1,10 @@
+// Pliki wbudowane w Kierownica.exe - program nie potrzebuje niczego obok siebie.
+#include "embedded_ids.h"
+
+IDR_VIGEM_DLL     RCDATA "../../python/vigem/x64/ViGEmClient.dll"
+IDR_VIGEM_LICENSE RCDATA "../../python/vigem/LICENSE-vgamepad.txt"
+
+IDR_FW_INO   RCDATA "../../../firmware/kierownica/kierownica.ino"
+IDR_FW_USB_H RCDATA "../../../firmware/kierownica/g29_usb.h"
+IDR_FW_BAT   RCDATA "../../../firmware/kierownica/wgraj_firmware.bat"
+IDR_FW_PS1   RCDATA "../../../firmware/kierownica/wgraj_firmware.ps1"

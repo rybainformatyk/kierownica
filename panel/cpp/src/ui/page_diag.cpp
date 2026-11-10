@@ -48,7 +48,11 @@ std::string fmt_duration(double seconds) {
     return h ? std::format("{}:{:02d}:{:02d}", h, m, s) : std::format("{}:{:02d}", m, s);
 }
 
-fs::path exe_path() { return exe_dir() / L"Kierownica.exe"; }
+fs::path exe_path() {
+    wchar_t buf[32768];
+    DWORD n = GetModuleFileNameW(nullptr, buf, 32768);
+    return fs::path(std::wstring(buf, n));
+}
 
 std::wstring lower(std::wstring s) {
     if (!s.empty()) CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));

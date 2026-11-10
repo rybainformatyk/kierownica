@@ -23,7 +23,7 @@ inline double clamp_sym(double v) { return v < -1.0 ? -1.0 : (v > 1.0 ? 1.0 : v)
 std::wstring widen(std::string_view utf8);
 std::string narrow(std::wstring_view wide);
 
-// Katalog z plikiem .exe - tam leza config.json i vigem/.
+// Katalog z plikiem .exe - tam lezy config.json.
 std::filesystem::path exe_dir();
 
 // Opis bledu Windows po polsku (albo w jezyku systemu).
