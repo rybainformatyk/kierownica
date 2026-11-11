@@ -1,5 +1,6 @@
 #include "gfx.h"
 
+#include <commctrl.h>
 #include <dwrite_1.h>
 
 #include <algorithm>
@@ -657,6 +658,49 @@ void Gfx::shadow(const Rect& rc, float radius, float blur, RGB color, float alph
             D2D1_RECT_F src = D2D1::RectF(us[i], us[j], us[i + 1], us[j + 1]);
             rt_->DrawBitmap(s.bitmap.Get(), dst, alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, src);
         }
+}
+
+void Gfx::icon(int resource_id, const Rect& dst, float alpha) {
+    float dpi_x = 96.0f, dpi_y = 96.0f;
+    rt_->GetDpi(&dpi_x, &dpi_y);
+    int px = std::max(1, static_cast<int>(std::lround(dst.w * dpi_x / 96.0f)));
+    const Sprite& s = cached("icon/" + std::to_string(resource_id) + "/" + std::to_string(px), [&] {
+        Sprite out;
+        // LoadIconWithScaleDown bierze wiekszy obrazek z .ico i zmniejsza go
+        // porzadnie - LoadImage powiekszalby mniejszy
+        HICON h = nullptr;
+        if (FAILED(LoadIconWithScaleDown(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(resource_id), px, px, &h)) || !h) return out;
+        ICONINFO info{};
+        if (GetIconInfo(h, &info)) {
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
+            bi.bmiHeader.biWidth = px;
+            bi.bmiHeader.biHeight = -px;  // od gory
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            bi.bmiHeader.biCompression = BI_RGB;
+            std::vector<uint32_t> pixels(static_cast<size_t>(px) * static_cast<size_t>(px));
+            HDC dc = GetDC(nullptr);
+            int rows = GetDIBits(dc, info.hbmColor, 0, static_cast<UINT>(px), pixels.data(), &bi, DIB_RGB_COLORS);
+            ReleaseDC(nullptr, dc);
+            if (rows == px) {
+                for (uint32_t& p : pixels) {  // Direct2D chce kolory przemnozone przez alfe
+                    uint32_t a = p >> 24;
+                    uint32_t r = ((p >> 16) & 0xFF) * a / 255, g = ((p >> 8) & 0xFF) * a / 255, b = (p & 0xFF) * a / 255;
+                    p = (a << 24) | (r << 16) | (g << 8) | b;
+                }
+                D2D1_BITMAP_PROPERTIES props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
+                rt_->CreateBitmap(D2D1::SizeU(static_cast<UINT32>(px), static_cast<UINT32>(px)), pixels.data(), static_cast<UINT32>(px) * 4, props, &out.bitmap);
+                out.w = out.h = static_cast<float>(px);
+            }
+            if (info.hbmColor) DeleteObject(info.hbmColor);
+            if (info.hbmMask) DeleteObject(info.hbmMask);
+        }
+        DestroyIcon(h);
+        return out;
+    });
+    if (!s) return;
+    rt_->DrawBitmap(s.bitmap.Get(), D2D1::RectF(dst.x, dst.y, dst.right(), dst.bottom()), alpha, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
 void Gfx::backdrop(float x, float y) {

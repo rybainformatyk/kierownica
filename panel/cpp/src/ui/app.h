@@ -17,17 +17,21 @@
 
 #include "../config.h"
 #include "../engine.h"
+#include "../updater.h"
+#include "../version.h"
 #include "gfx.h"
 #include "pages.h"
+#include "tray.h"
 #include "widgets.h"
 
 namespace wb::ui {
 
 inline constexpr const char* APP_TITLE = "Panel kierownicy";
-inline constexpr const char* APP_VERSION = "3.1";
+inline constexpr const char* APP_VERSION = APP_VERSION_TEXT;
 
 struct AppOptions {
     bool minimized = false;
+    bool after_update = false;  // --po-aktualizacji: nowa wersja wlasnie sie zainstalowala
     std::filesystem::path selftest_dir;  // niepuste: bez okna, rysuje do plikow PNG
 };
 
@@ -69,6 +73,11 @@ public:
     void open_mode_popover(const Rect& anchor);
     HWND window() const { return hwnd_; }
 
+    // --- aktualizacje ---
+    update::Updater& updater() { return *updater_; }
+    // Przycisk w Diagnostyce i pozycja w menu ikony: sprawdz / pobierz i zainstaluj.
+    void update_action();
+
     G29Page* g29_page() { return g29_; }
     PadPage* pad_page() { return pad_; }
 
@@ -81,6 +90,8 @@ private:
     bool create_window();
     void place_window();
     void apply_frame_style();
+    // Ikony okna (pasek zadan, Alt+Tab) w rozmiarze dla DPI monitora okna.
+    void apply_window_icons();
     void create_target();
     void render();
     void render_to(ID2D1RenderTarget* rt);
@@ -90,6 +101,21 @@ private:
     void store_ui_state();
     void on_close();
     void on_caption(int caption);
+    // Krzyzyk / Alt+F4: chowa do zasobnika albo zamyka, zaleznie od ui.tray.
+    void request_close();
+
+    // --- zasobnik ---
+    void setup_tray();
+    void hide_to_tray();
+    void show_window();
+    void show_tray_menu(POINT at);
+    void refresh_tray(const Frame& f);
+    std::wstring tray_tip(const Frame& f) const;
+
+    // --- aktualizacje ---
+    void poll_updater();
+    void install_update(const update::State& s);
+    void cleanup_after_update();
     void set_timer_period(UINT ms);
     void tick();
     Widget* widget_at(float x, float y);
@@ -134,6 +160,22 @@ private:
     bool zoomed_ = false;
     bool closing_ = false;
     bool hidden_ = false;
+    // --- zasobnik ---
+    TrayIcon tray_;
+    HICON icon_big_ = nullptr;
+    HICON icon_small_ = nullptr;
+    HICON icon_tray_on_ = nullptr;
+    HICON icon_tray_off_ = nullptr;
+    HICON icon_window_big_ = nullptr;
+    HICON icon_window_small_ = nullptr;
+    bool in_tray_ = false;        // okno schowane, panel dziala w tle
+    bool ever_shown_ = false;     // start z autostartu: okna jeszcze nie bylo widac
+    bool tray_hint_shown_ = false;
+    // --- aktualizacje ---
+    std::unique_ptr<update::Updater> updater_;
+    uint64_t update_serial_ = 0;
+    bool install_when_ready_ = false;  // uzytkownik kliknal "Zaktualizuj" - po pobraniu instalujemy
+    double update_check_at_ = 0;       // automatyczne sprawdzenie chwile po starcie
     double hidden_t_ = 0;
     double last_render_ = 0;
     double last_move_ = 0;

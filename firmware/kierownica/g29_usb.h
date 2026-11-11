@@ -1,55 +1,47 @@
 /* =============================================================================
- *  G29 na porcie NATIVE USB
+ *  G29 przez PluggableUSB - Arduino Due (Native USB) i Leonardo / Micro
  * =============================================================================
  *
- *  Port Native USB (gniazdo micro-USB blizej srodka plytki) przedstawia sie
- *  Windowsowi jako Logitech G29 Driving Force Racing Wheel: VID 046D,
- *  PID C24F i ten sam deskryptor raportu co prawdziwa kierownica w trybie
- *  PS3/PC. Gry, ktore przyjmuja tylko kierownice ze swojej listy (Forza),
- *  widza wtedy G29 - bez vJoy, bez trybu pada.
+ *  Opis raportu: g29_raport.h. Tu jest tylko obsluga USB.
  *
- *  Raport sklada aplikacja na PC (kalibracja, krzywe, mapowanie przyciskow)
- *  i przysyla go gotowego komenda CMD_G29. Plytka tylko wypycha go przez
- *  USB, wiec cale mapowanie zostaje w aplikacji.
+ *  Due: port Native USB (gniazdo blizej srodka plytki) jest sama kierownica,
+ *  a lacze z aplikacja idzie Programming Portem. setAttached(false) odlacza
+ *  caly port Native USB od komputera - Windows widzi to jak wyjecie kabla,
+ *  wiec gry przestaja widziec G29. Aplikacja robi tak w trybach bez G29.
  *
- *  Uklad raportu - 12 B, bez numeru raportu, identyczny z G29:
- *    bajt 0      bity 0-3 krzyzak (0..7 co 45 st., 8 = srodek)
- *                bity 4-7 przyciski 1-4
- *    bajty 1-3   przyciski 5-25 (3 najstarsze bity bajtu 3 sa puste)
- *    bajty 4-5   kierownica, 16 bit LE, 0..65535, srodek 32768
- *    bajt 6      gaz       (os Z)   255 = puszczony
- *    bajt 7      hamulec   (os Rz)  255 = puszczony
- *    bajt 8      sprzeglo  (os Y)   255 = puszczony
- *    bajty 9-11  pole producenta (drazek skrzyni, flagi)
+ *  Leonardo / Micro: jedno gniazdo USB jest urzadzeniem zlozonym - port COM
+ *  (lacze z aplikacja) + G29. Odlaczyc G29 sie nie da, bo zniknalby tez
+ *  port COM.
  *
- *  Deskryptor raportu pochodzi z projektu lgff_wheel_adapter
- *  (github.com/sonik-br/lgff_wheel_adapter, usb_descriptors.h, licencja
- *  GPL-3.0). Zgadza sie
- *  z parserem G29 w SDL3 (SDL_hidapi_lg4ff.c: raport 12 B, kierownica w
- *  bajtach 4-5, pedaly w 6-8) i z zapisem sterownika Logitecha (17-bajtowy
- *  zapis = numer raportu + 16 B wyjscia).
- *
- *  setAttached(false) odlacza caly port Native USB od komputera - Windows
- *  widzi to jak wyjecie kabla, wiec gry przestaja widziec G29. Aplikacja
- *  robi tak w trybach bez G29, zeby gry nie dostawaly dwoch kierownic.
- *
- *  Kazda funkcja wolana z petli jest NIEBLOKUJACA. USBD_Send() z rdzenia Due
- *  czeka w nieskonczonosc, az host odbierze poprzedni pakiet - przy uspionym
- *  komputerze zawiesilaby petle razem z watchdogiem silnika FFB. Dlatego
- *  przed wyslaniem sami sprawdzamy, czy bufor endpointu jest wolny.
+ *  Kazda funkcja wolana z petli jest NIEBLOKUJACA. USBD_Send() (Due)
+ *  i USB_Send() (AVR) czekaja, az host odbierze poprzedni pakiet - przy
+ *  uspionym komputerze zawiesilyby petle razem z watchdogiem silnika FFB.
+ *  Dlatego przed wyslaniem sami sprawdzamy, czy bufor endpointu jest wolny.
  * =============================================================================
  */
 
 #pragma once
 
 #include <Arduino.h>
-#include "USB/PluggableUSB.h"
+#include "g29_raport.h"
 
-#define G29_VID           0x046D
-#define G29_PID           0xC24F
-#define G29_BCD_DEVICE    0x8900      // rewizja rozpoznawana jako G29 (SDL, Linux)
-#define G29_REPORT_SIZE   12
-#define G29_OUT_MAX       16          // raport wyjsciowy gry (komendy FFB/zakresu)
+#if defined(ARDUINO_ARCH_SAM)
+  #include "USB/PluggableUSB.h"
+  typedef uint32_t G29EpType;
+  #define G29_SEND_CONTROL  USBD_SendControl
+  #define G29_RECV_CONTROL  USBD_RecvControl
+  #define G29_PGM_FLAG      0
+  #define G29_CAN_DETACH    1
+#elif defined(ARDUINO_ARCH_AVR) && defined(USBCON)
+  #include "PluggableUSB.h"
+  typedef uint8_t G29EpType;
+  #define G29_SEND_CONTROL  USB_SendControl
+  #define G29_RECV_CONTROL  USB_RecvControl
+  #define G29_PGM_FLAG      TRANSFER_PGM
+  #define G29_CAN_DETACH    0
+#else
+  #error "g29_usb.h wymaga Arduino Due albo plytki z ATmega32U4"
+#endif
 
 // zadania klasy HID - wlasne nazwy, zeby nie wciagac biblioteki HID
 #define G29_HID_GET_REPORT     0x01
@@ -61,32 +53,6 @@
 #define G29_DESC_HID           0x21
 #define G29_DESC_REPORT        0x22
 
-static const uint8_t G29_REPORT_DESC[] = {
-  0x05, 0x01, 0x09, 0x04, 0xA1, 0x01, 0x09, 0x39, 0x15, 0x00, 0x25, 0x07,
-  0x35, 0x00, 0x46, 0x3B, 0x01, 0x65, 0x14, 0x75, 0x04, 0x95, 0x01, 0x81,
-  0x42, 0x05, 0x09, 0x19, 0x01, 0x29, 0x19, 0x65, 0x00, 0x25, 0x01, 0x45,
-  0x01, 0x75, 0x01, 0x95, 0x19, 0x81, 0x02, 0x75, 0x01, 0x95, 0x03, 0x81,
-  0x03, 0x05, 0x01, 0x09, 0x30, 0x27, 0xFF, 0xFF, 0x00, 0x00, 0x47, 0xFF,
-  0xFF, 0x00, 0x00, 0x75, 0x10, 0x95, 0x01, 0x81, 0x02, 0x09, 0x32, 0x09,
-  0x35, 0x09, 0x31, 0x26, 0xFF, 0x00, 0x46, 0xFF, 0x00, 0x75, 0x08, 0x95,
-  0x03, 0x81, 0x02, 0x06, 0x00, 0xFF, 0x09, 0x01, 0x95, 0x02, 0x81, 0x02,
-  0x06, 0x00, 0xFF, 0x09, 0x01, 0x95, 0x01, 0x81, 0x02, 0x06, 0x00, 0xFF,
-  0x09, 0x02, 0x26, 0xFF, 0x00, 0x46, 0xFF, 0x00, 0x95, 0x10, 0x75, 0x08,
-  0x91, 0x02, 0xC0,
-};
-
-// Stan spoczynkowy: krzyzak na srodku, nic nie wcisniete, kierownica na
-// srodku, pedaly puszczone. Wysylany po starcie i gdy aplikacja zamilknie.
-static const uint8_t G29_NEUTRAL[G29_REPORT_SIZE] = {
-  0x08, 0x00, 0x00, 0x00,
-  0x00, 0x80,
-  0xFF, 0xFF, 0xFF,
-  0x80, 0x80, 0x00,
-};
-
-static const char G29_MANUFACTURER[] = "Logitech";
-static const char G29_PRODUCT[]      = "G29 Driving Force Racing Wheel";
-
 class G29Usb : public PluggableUSBModule {
 public:
   G29Usb() : PluggableUSBModule(1, 1, epType) {
@@ -94,6 +60,8 @@ public:
     memcpy(report, G29_NEUTRAL, G29_REPORT_SIZE);
     PluggableUSB().plug(this);
   }
+
+  void begin() {}
 
   // Raport od aplikacji. False przy zlej dlugosci.
   bool setReport(const uint8_t *p, uint8_t len) {
@@ -109,19 +77,23 @@ public:
 
   void setNeutral() { setReport(G29_NEUTRAL, G29_REPORT_SIZE); }
 
-  // Czy Windows wyliczyl port Native USB (kabel podlaczony, sterownik
-  // zaladowany). Trafia do flag ramki STATE.
-  bool hostConfigured() const { return usbOn && USBDevice.configured(); }
+  // Czy Windows wyliczyl G29 (kabel podlaczony, sterownik zaladowany).
+  // Trafia do flag ramki STATE.
+  bool hostConfigured() { return usbOn && USBDevice.configured(); }
 
-  // Podlacza / odlacza port Native USB. Po odlaczeniu rdzen nie dostaje
-  // juz resetu od hosta, wiec configured() zostaje na starej wartosci -
-  // stad wlasna flaga usbOn.
+  // Podlacza / odlacza port Native USB (tylko Due). Po odlaczeniu rdzen nie
+  // dostaje juz resetu od hosta, wiec configured() zostaje na starej
+  // wartosci - stad wlasna flaga usbOn.
   void setAttached(bool on) {
+#if G29_CAN_DETACH
     if (on == usbOn) return;
     usbOn = on;
     wasConfigured = false;
     if (on) USBDevice.attach();
     else    USBDevice.detach();
+#else
+    (void)on;
+#endif
   }
 
   bool attached() const { return usbOn; }
@@ -136,18 +108,18 @@ public:
       wasConfigured = true;
       dirty = true;
     }
-    if (!dirty) return;
-
-    const uint32_t ep = pluggedEndpoint;
-    // TXINI = jest wolny bank endpointu. Bez tego USBD_Send by czekal.
-    if (!(UOTGHS->UOTGHS_DEVEPTISR[ep] & UOTGHS_DEVEPTISR_TXINI)) return;
+    if (!dirty || !endpointFree()) return;
 
     uint8_t copy[G29_REPORT_SIZE];
     noInterrupts();
     memcpy(copy, report, G29_REPORT_SIZE);
     dirty = false;
     interrupts();
-    USBD_Send(ep, copy, G29_REPORT_SIZE);
+#if defined(ARDUINO_ARCH_SAM)
+    USBD_Send(pluggedEndpoint, copy, G29_REPORT_SIZE);
+#else
+    USB_Send(pluggedEndpoint | TRANSFER_RELEASE, copy, G29_REPORT_SIZE);
+#endif
   }
 
   // Raport wyjsciowy od gry (sterownik Logitecha wysyla tak komendy FFB
@@ -175,7 +147,7 @@ protected:
       // endpoint IN, przerwaniowy, 64 B, co 1 ramke
       7, 0x05, (uint8_t)(0x80 | pluggedEndpoint), 0x03, 0x40, 0x00, 0x01,
     };
-    return USBD_SendControl(0, d, sizeof(d));
+    return G29_SEND_CONTROL(0, d, sizeof(d));
   }
 
   int getDescriptor(USBSetup &setup) {
@@ -193,7 +165,7 @@ protected:
           IMANUFACTURER, IPRODUCT, ISERIAL,
           1,
         };
-        return sendClipped(d, sizeof(d), setup.wLength);
+        return sendClipped(d, sizeof(d), setup.wLength, 0);
       }
       if (setup.wValueH == USB_STRING_DESCRIPTOR_TYPE) {
         if (setup.wValueL == IMANUFACTURER) return sendString(G29_MANUFACTURER, setup.wLength);
@@ -206,13 +178,13 @@ protected:
     if (setup.bmRequestType == REQUEST_DEVICETOHOST_STANDARD_INTERFACE &&
         setup.wIndex == pluggedInterface) {
       if (setup.wValueH == G29_DESC_REPORT) {
-        return sendClipped(G29_REPORT_DESC, sizeof(G29_REPORT_DESC), setup.wLength);
+        return sendClipped(G29_REPORT_DESC, sizeof(G29_REPORT_DESC), setup.wLength, G29_PGM_FLAG);
       }
       if (setup.wValueH == G29_DESC_HID) {
         const uint16_t rlen = sizeof(G29_REPORT_DESC);
         const uint8_t d[9] = { 9, G29_DESC_HID, 0x11, 0x01, 0x00, 1, G29_DESC_REPORT,
                                (uint8_t)(rlen & 0xFF), (uint8_t)(rlen >> 8) };
-        return sendClipped(d, sizeof(d), setup.wLength);
+        return sendClipped(d, sizeof(d), setup.wLength, 0);
       }
     }
     return 0;
@@ -227,11 +199,11 @@ protected:
       if (r == G29_HID_GET_REPORT) {
         uint8_t copy[G29_REPORT_SIZE];
         memcpy(copy, report, G29_REPORT_SIZE);
-        sendClipped(copy, G29_REPORT_SIZE, setup.wLength);
+        sendClipped(copy, G29_REPORT_SIZE, setup.wLength, 0);
         return true;
       }
-      if (r == G29_HID_GET_IDLE)     { USBD_SendControl(0, &idle, 1);     return true; }
-      if (r == G29_HID_GET_PROTOCOL) { USBD_SendControl(0, &protocol, 1); return true; }
+      if (r == G29_HID_GET_IDLE)     { G29_SEND_CONTROL(0, &idle, 1);     return true; }
+      if (r == G29_HID_GET_PROTOCOL) { G29_SEND_CONTROL(0, &protocol, 1); return true; }
     }
 
     if (t == REQUEST_HOSTTODEVICE_CLASS_INTERFACE) {
@@ -239,12 +211,12 @@ protected:
       if (r == G29_HID_SET_PROTOCOL) { protocol = setup.wValueL; return true; }
       if (r == G29_HID_SET_REPORT) {
         // Faza danych MUSI zostac odebrana w calosci, inaczej host zgubi
-        // transfer. USBD_RecvControl dziala do 64 B - raport G29 ma 16.
+        // transfer. RecvControl dziala do 64 B - raport G29 ma 16.
         const uint16_t n = setup.wLength;
         if (n > 64) return false;
         if (n == 0) return true;
         uint8_t buf[64];
-        USBD_RecvControl(buf, n);
+        G29_RECV_CONTROL(buf, n);
         const uint8_t keep = (n > G29_OUT_MAX) ? G29_OUT_MAX : (uint8_t)n;
         memcpy(outBuf, buf, keep);
         outLen = keep;
@@ -263,11 +235,21 @@ protected:
   }
 
 private:
-  static int sendClipped(const uint8_t *d, uint16_t len, uint16_t wLength) {
-    // USBD_SendControl nie przycina do dlugosci, o ktora pyta host
+  // Czy endpoint przyjmie raport bez czekania.
+  bool endpointFree() {
+#if defined(ARDUINO_ARCH_SAM)
+    // TXINI = jest wolny bank endpointu
+    return UOTGHS->UOTGHS_DEVEPTISR[pluggedEndpoint] & UOTGHS_DEVEPTISR_TXINI;
+#else
+    return USB_SendSpace(pluggedEndpoint) >= G29_REPORT_SIZE;
+#endif
+  }
+
+  static int sendClipped(const uint8_t *d, uint16_t len, uint16_t wLength, uint8_t flags) {
+    // SendControl nie przycina do dlugosci, o ktora pyta host
     if (len > wLength) len = wLength;
     if (len == 0) return 0;
-    USBD_SendControl(0, d, len);
+    G29_SEND_CONTROL(flags, d, len);
     return len;
   }
 
@@ -281,10 +263,10 @@ private:
       buf[2 + 2 * i] = (uint8_t)s[i];
       buf[3 + 2 * i] = 0;
     }
-    return sendClipped(buf, buf[0], wLength);
+    return sendClipped(buf, buf[0], wLength, 0);
   }
 
-  uint32_t epType[1];
+  G29EpType epType[1];
   uint8_t  report[G29_REPORT_SIZE];
   volatile bool dirty = true;
   bool     wasConfigured = false;

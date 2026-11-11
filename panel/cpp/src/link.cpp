@@ -90,16 +90,32 @@ std::vector<PortInfo> list_ports() {
 bool looks_like_arduino(const PortInfo& info) {
     std::string blob = info.description + " " + info.hwid;
     std::transform(blob.begin(), blob.end(), blob.begin(), [](unsigned char c) { return static_cast<char>(tolower(c)); });
-    for (const char* v : {"2341", "1a86", "2a03", "046d", "arduino", "due", "ch340", "usb serial", "usb-serial"})
+    // Arduino, mostki CH340 / CP210x / FTDI (klony, ESP32), Espressif, SparkFun Pro Micro, G29
+    for (const char* v : {"2341", "1a86", "2a03", "10c4", "0403", "303a", "1b4f", "046d", "arduino", "due", "ch340", "cp210",
+                          "usb serial", "usb-serial"})
         if (blob.find(v) != std::string::npos) return true;
     return false;
+}
+
+bool wants_dtr(const PortInfo& info) {
+    std::string id = info.hwid;
+    std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(toupper(c)); });
+    return id.find("&MI_") != std::string::npos || id.find("VID_303A") != std::string::npos;
+}
+
+double probe_timeout(const PortInfo& info) {
+    std::string id = info.hwid;
+    std::transform(id.begin(), id.end(), id.begin(), [](unsigned char c) { return static_cast<char>(toupper(c)); });
+    for (const char* v : {"VID_1A86", "VID_10C4", "VID_0403"})
+        if (id.find(v) != std::string::npos) return PROBE_TIMEOUT_BRIDGE;
+    return PROBE_TIMEOUT;
 }
 
 // ------------------------------------------------------------- SerialPort
 
 SerialPort::~SerialPort() { close(); }
 
-std::string SerialPort::open(const std::string& device, int baudrate) {
+std::string SerialPort::open(const std::string& device, int baudrate, bool dtr) {
     std::wstring path = L"\\\\.\\" + widen(device);
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
@@ -118,8 +134,9 @@ std::string SerialPort::open(const std::string& device, int baudrate) {
     dcb.fParity = FALSE;
     dcb.fOutxCtsFlow = FALSE;
     dcb.fOutxDsrFlow = FALSE;
-    // DTR/RTS w stanie niskim - inaczej otwarcie portu resetuje Due
-    dcb.fDtrControl = DTR_CONTROL_DISABLE;
+    // DTR/RTS w stanie niskim - inaczej otwarcie portu resetuje Due i Uno.
+    // Natywne USB (Leonardo, ESP32-S3) bez DTR milczy, a nie resetuje sie.
+    dcb.fDtrControl = dtr ? DTR_CONTROL_ENABLE : DTR_CONTROL_DISABLE;
     dcb.fRtsControl = RTS_CONTROL_DISABLE;
     dcb.fOutX = FALSE;
     dcb.fInX = FALSE;
@@ -320,7 +337,11 @@ void SerialLink::do_connect() {
         requested = requested_port_;
     }
     if (requested) {
-        candidates.push_back(PortInfo{*requested, "", ""});
+        // opis i identyfikator USB sa potrzebne do decyzji o DTR
+        PortInfo info{*requested, "", ""};
+        for (const PortInfo& p : list_ports())
+            if (p.device == *requested) info = p;
+        candidates.push_back(std::move(info));
     } else {
         auto all = list_ports();
         // najpierw to, co wyglada na Arduino
@@ -340,9 +361,9 @@ void SerialLink::do_connect() {
             if (stop_.load() || !want_connect_) return;
         }
         log("info", "Sprawdzam " + info.device + "...");
-        auto ser = open_port(info.device);
+        auto ser = open_port(info);
         if (!ser) continue;
-        auto hello = probe(*ser);
+        auto hello = probe(*ser, probe_timeout(info));
         if (!hello) continue;  // destruktor zamyka port
 
         // sukces
@@ -372,25 +393,25 @@ void SerialLink::do_connect() {
     set_state(LinkState::Scanning, "Nie znaleziono płytki");
 }
 
-std::unique_ptr<SerialPort> SerialLink::open_port(const std::string& device) {
+std::unique_ptr<SerialPort> SerialLink::open_port(const PortInfo& info) {
     int baud;
     {
         std::lock_guard lock(req_lock_);
         baud = baudrate_;
     }
     auto ser = std::make_unique<SerialPort>();
-    std::string error = ser->open(device, baud);
+    std::string error = ser->open(info.device, baud, wants_dtr(info));
     if (!error.empty()) {
-        log("warn", device + ": " + error);
+        log("warn", info.device + ": " + error);
         return nullptr;
     }
     return ser;
 }
 
 // Pyta plytke kim jest. Akceptuje HELLO albo (po STATE) wymusza HELLO.
-std::shared_ptr<const protocol::HelloInfo> SerialLink::probe(SerialPort& ser) {
+std::shared_ptr<const protocol::HelloInfo> SerialLink::probe(SerialPort& ser, double timeout) {
     protocol::FrameParser parser;
-    double deadline = monotonic() + PROBE_TIMEOUT;
+    double deadline = monotonic() + timeout;
     bool asked_again = false;
     std::string error;
     auto ask = protocol::cmd_identify();

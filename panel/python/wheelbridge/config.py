@@ -339,9 +339,15 @@ class PadConfig:
         return [d for d in PAD_DIRECTIONS if self.axes.get(d) == source]
 
 
+#: Plytki z firmware/kierownica/piny.h - klucze dla wgraj_firmware.ps1 -Plytka.
+BOARD_KEYS = ("", "due", "mega", "uno", "nano", "leonardo", "micro", "esp32", "esp32s3")
+
+
 @dataclass
 class LinkConfig:
     port: str = ""                  # "" = autodetekcja
+    #: plytka dla "Wgraj firmware" (wersja C++), "" = wedlug HELLO
+    board: str = ""
     baudrate: int = protocol.DEFAULT_BAUD
     auto_connect: bool = True
     report_hz: int = 333
@@ -487,6 +493,10 @@ class UiConfig:
     geometry: str = ""
     zoomed: bool = False
     tab: int = 0
+    #: zamkniecie okna chowa panel do zasobnika (wersja C++)
+    tray: bool = True
+    #: sprawdzanie aktualizacji przy starcie (wersja C++)
+    updates: bool = True
 
 
 @dataclass
@@ -609,6 +619,8 @@ class AppConfig:
 
         if not isinstance(self.link.port, str):
             self.link.port = ""
+        if self.link.board not in BOARD_KEYS:
+            self.link.board = ""
         self.link.baudrate = max(9600, min(2_000_000, _as_int(
             self.link.baudrate, LinkConfig.baudrate)))
         self.link.report_hz = max(50, min(500, _as_int(
@@ -628,6 +640,8 @@ class AppConfig:
         u = self.ui
         u.geometry = u.geometry if isinstance(u.geometry, str) else ""
         u.zoomed = bool(u.zoomed)
+        u.tray = bool(u.tray)
+        u.updates = bool(u.updates)
         u.tab = max(0, min(31, _as_int(u.tab, 0)))
 
     # -------------------------------------------------------- serializacja

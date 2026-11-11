@@ -282,23 +282,13 @@ class PanelApp:
             return 0
 
     def _set_icon(self) -> None:
-        # Prosta ikona rysowana w locie - brak zewnetrznych plikow.
+        # Logo programu w kilku rozmiarach (rysuje je panel/cpp/tools/make_icon.py)
+        # - Windows bierze najlepszy dla paska zadan i tytulu okna.
+        res = Path(__file__).resolve().parent / "res"
         try:
-            img = tk.PhotoImage(width=32, height=32)
-            cx = cy = 15.5
-            for y in range(32):
-                for x in range(32):
-                    d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-                    if 11.5 <= d <= 15.0:
-                        img.put(theme.ACCENT, (x, y))
-                    elif d <= 3.5:
-                        img.put(theme.ACCENT, (x, y))
-            for t in range(4, 12):
-                img.put(theme.ACCENT, (int(cx), int(cy) - t))
-                img.put(theme.ACCENT, (int(cx) - t, int(cy) + t // 2))
-                img.put(theme.ACCENT, (int(cx) + t, int(cy) + t // 2))
-            self.root.iconphoto(True, img)
-            self._icon = img            # trzymamy referencje
+            imgs = [tk.PhotoImage(file=str(res / f"logo_{s}.png")) for s in (256, 64, 48, 32, 16)]
+            self.root.iconphoto(True, *imgs)
+            self._icon = imgs           # trzymamy referencje
         except Exception:
             pass
 

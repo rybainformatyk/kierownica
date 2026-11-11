@@ -90,7 +90,10 @@ std::optional<fs::path> firmware_script() {
     if (!extract(dir, {{IDR_FW_INO, L"kierownica.ino"},
                        {IDR_FW_USB_H, L"g29_usb.h"},
                        {IDR_FW_BAT, L"wgraj_firmware.bat"},
-                       {IDR_FW_PS1, L"wgraj_firmware.ps1"}}))
+                       {IDR_FW_PS1, L"wgraj_firmware.ps1"},
+                       {IDR_FW_PINY, L"piny.h"},
+                       {IDR_FW_RAPORT, L"g29_raport.h"},
+                       {IDR_FW_TINYUSB, L"g29_tinyusb.h"}}))
         return std::nullopt;
     return dir / L"wgraj_firmware.bat";
 }

@@ -24,13 +24,14 @@ add_library(wheelcore STATIC
     src/link.cpp
     src/engine.cpp
     src/winsys.cpp
+    src/updater.cpp
     src/outputs/vjoy.cpp
     src/outputs/xinput.cpp
 )
 target_include_directories(wheelcore PUBLIC src)
 target_compile_definitions(wheelcore PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_compile_options(wheelcore PUBLIC /utf-8 /W4 /permissive- /EHsc)
-target_link_libraries(wheelcore PUBLIC setupapi advapi32 shell32 ole32 dwmapi user32)
+target_link_libraries(wheelcore PUBLIC setupapi advapi32 shell32 ole32 dwmapi user32 winhttp bcrypt)
 
 add_executable(Kierownica WIN32
     src/main.cpp
@@ -38,19 +39,20 @@ add_executable(Kierownica WIN32
     src/ui/widgets.cpp
     src/ui/padview.cpp
     src/ui/app.cpp
+    src/ui/tray.cpp
     src/ui/page_home.cpp
     src/ui/page_setup.cpp
     src/ui/page_assign.cpp
     src/ui/page_diag.cpp
     src/kierownica.rc
 )
-target_link_libraries(Kierownica PRIVATE wheelcore d2d1 dwrite windowscodecs winmm gdi32)
+target_link_libraries(Kierownica PRIVATE wheelcore d2d1 dwrite windowscodecs winmm gdi32 comctl32)
 # Common Controls 6 - okna komunikatow w stylu systemu.
 target_link_options(Kierownica PRIVATE "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'")
 set_target_properties(Kierownica PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE "${BIN_DIR}")
 # Zmiana wbudowanego pliku ma przebudowac zasoby.
 set_source_files_properties(src/kierownica.rc PROPERTIES OBJECT_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/embedded_ids.h;${CMAKE_CURRENT_SOURCE_DIR}/../python/vigem/x64/ViGEmClient.dll;${CMAKE_CURRENT_SOURCE_DIR}/../python/vigem/LICENSE-vgamepad.txt;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/kierownica.ino;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/g29_usb.h;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/wgraj_firmware.bat;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/wgraj_firmware.ps1")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/embedded_ids.h;${CMAKE_CURRENT_SOURCE_DIR}/src/version.h;${CMAKE_CURRENT_SOURCE_DIR}/src/res/kierownica.ico;${CMAKE_CURRENT_SOURCE_DIR}/src/res/tray_on.ico;${CMAKE_CURRENT_SOURCE_DIR}/src/res/tray_off.ico;${CMAKE_CURRENT_SOURCE_DIR}/../python/vigem/x64/ViGEmClient.dll;${CMAKE_CURRENT_SOURCE_DIR}/../python/vigem/LICENSE-vgamepad.txt;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/kierownica.ino;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/g29_usb.h;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/piny.h;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/g29_raport.h;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/g29_tinyusb.h;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/wgraj_firmware.bat;${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/kierownica/wgraj_firmware.ps1")
 
 add_executable(core_tests tests/test_core.cpp)
 target_link_libraries(core_tests PRIVATE wheelcore)

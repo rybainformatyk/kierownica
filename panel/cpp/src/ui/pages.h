@@ -11,6 +11,7 @@
 
 #include "../config.h"
 #include "../engine.h"
+#include "../updater.h"
 #include "padview.h"
 #include "widgets.h"
 
@@ -307,6 +308,7 @@ public:
     std::string log_text() const;
     void sync_autostart();
     void set_flash_enabled(bool enabled);
+    void set_update(const update::State& s, update::InstallKind kind);
 
 private:
     void on_autostart(bool want);
@@ -321,6 +323,8 @@ private:
     Button* btn_flash_ = nullptr;
     Toggle* autostart_ = nullptr;
     Label* autostart_other_ = nullptr;
+    Label* update_status_ = nullptr;
+    Button* btn_update_ = nullptr;
     TextView* vjoy_ = nullptr;
     TextView* log_ = nullptr;
     Segmented* log_filter_ = nullptr;

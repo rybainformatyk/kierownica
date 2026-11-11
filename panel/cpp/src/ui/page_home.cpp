@@ -233,7 +233,7 @@ void HomePage::refresh_status(const Frame& f) {
         s_board_->set(Level::Busy, "Wgrywanie firmware", "Panel połączy się po zamknięciu okna wgrywania");
         s_board_->set_action("", nullptr);
     } else if (f.connected) {
-        s_board_->set(Level::Ok, "Płytka połączona", std::format("{} · {} · {:.0f} Hz", hello ? hello->name : "?", f.stats.port, f.stats.frames_per_sec));
+        s_board_->set(Level::Ok, "Płytka połączona", std::format("{} · {} · {:.0f} Hz", hello ? hello->board() : "?", f.stats.port, f.stats.frames_per_sec));
         s_board_->set_action("", nullptr);
     } else if (f.link == LinkState::Scanning) {
         s_board_->set(Level::Busy, "Szukanie płytki", st.link_detail);

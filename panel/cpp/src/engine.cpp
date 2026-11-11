@@ -190,7 +190,7 @@ bool WheelEngine::open_output(bool ask_again) {
             std::lock_guard lock(g29_mutex_);
             last_g29_.reset();
         }
-        log("ok", "Tryb G29: gry widzą kierownicę Logitech G29 na porcie Native USB płytki");
+        log("ok", "Tryb G29: gry widzą kierownicę Logitech G29 na porcie USB płytki");
     }
     {
         std::lock_guard lock(opened_mutex_);
@@ -329,9 +329,14 @@ void WheelEngine::sync_g29_usb(bool force, const protocol::StateFrame* frame) {
     if (!hello || !hello->has_g29()) return;
     bool want = live()->output.g29_wanted();
     if (!hello->can_hide_g29()) {
-        if (!want && !g29_hide_warned_.exchange(true))
-            log("warn", std::format("Firmware {} nie umie ukryć G29 - gry nadal ją widzą. Wgraj firmware {}.",
-                                    hello->firmware(), protocol::FW_LATEST_TEXT));
+        if (!want && !g29_hide_warned_.exchange(true)) {
+            if (hello->g29_same_cable())
+                log("info", std::format("{}: G29 i łącze z panelem idą jednym gniazdem USB, więc G29 nie da się ukryć - gry widzą ją obok wybranego urządzenia.",
+                                        hello->board()));
+            else
+                log("warn", std::format("Firmware {} nie umie ukryć G29 - gry nadal ją widzą. Wgraj firmware {}.",
+                                        hello->firmware(), protocol::FW_LATEST_TEXT));
+        }
         return;
     }
     double now = monotonic();
@@ -446,7 +451,7 @@ void WheelEngine::refresh_output_status() {
     status_.output_name = cfg->output.mode;
     auto* vjoy = dynamic_cast<VJoyBackend*>(output_.get());
     status_.output_ok = vjoy && vjoy->is_open();
-    status_.output_text = cfg->output.g29_on() ? "Kierownica G29 na porcie Native USB" : output_->status_text();
+    status_.output_text = cfg->output.g29_on() ? "Kierownica G29 na porcie USB płytki" : output_->status_text();
     status_.pad_ok = pad_output_ && pad_output_->is_open();
     status_.pad_text = pad_output_ ? pad_output_->status_text() : "Pad nieaktywny";
     status_.ffb_registered = ffb_->registered();
@@ -608,13 +613,18 @@ void WheelEngine::handle_hello(const protocol::HelloInfo& hello) {
         status_.device_name = hello.name;
         status_.board_has_ffb = hello.has_ffb();
         status_.g29_fw = hello.has_g29();
+        status_.g29_unsupported = hello.g29_unsupported();
+        status_.g29_same_cable = hello.g29_same_cable();
     }
     {
         std::lock_guard lock(g29_mutex_);
         last_g29_.reset();
     }
     g29_hide_warned_.store(false);
-    if (live()->output.g29_on() && !hello.has_g29())
+    if (live()->output.g29_on() && hello.g29_unsupported())
+        log("warn", std::format("{} nie ma natywnego USB, więc nie udaje G29 - wybierz tryb vJoy albo pad Xbox 360",
+                                hello.board()));
+    else if (live()->output.g29_on() && !hello.has_g29())
         log("warn", std::format("Firmware {} nie ma trybu G29 - wgraj firmware {} (Diagnostyka → Wgraj firmware)",
                                 hello.firmware(), protocol::FW_LATEST_TEXT));
     else if (hello.outdated())
@@ -629,6 +639,8 @@ void WheelEngine::handle_status(LinkState state, const std::string& detail) {
         status_.link_detail = detail;
         if (state != LinkState::Connected) {
             status_.g29_fw = false;
+            status_.g29_unsupported = false;
+            status_.g29_same_cable = false;
             status_.g29_usb = false;
             status_.g29_fed = false;
             status_.g29_attached = true;

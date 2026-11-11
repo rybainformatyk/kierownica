@@ -1,10 +1,50 @@
-// Pliki wbudowane w Kierownica.exe - program nie potrzebuje niczego obok siebie.
+// Zasoby Kierownica.exe: ikony, opis wersji i pliki wbudowane w program -
+// program nie potrzebuje niczego obok siebie.
+#include <winres.h>
+
 #include "embedded_ids.h"
+#include "version.h"
+
+IDI_APP      ICON "res/kierownica.ico"
+IDI_TRAY_ON  ICON "res/tray_on.ico"
+IDI_TRAY_OFF ICON "res/tray_off.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, 0
+ PRODUCTVERSION APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH, 0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    0
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "041504b0"
+        BEGIN
+            VALUE "CompanyName",      "Kierownica DIY"
+            VALUE "FileDescription",  "Panel kierownicy"
+            VALUE "FileVersion",      APP_VERSION_FULL
+            VALUE "InternalName",     "Kierownica"
+            VALUE "LegalCopyright",   "GNU GPL v3"
+            VALUE "OriginalFilename", "Kierownica.exe"
+            VALUE "ProductName",      "Panel kierownicy"
+            VALUE "ProductVersion",   APP_VERSION_FULL
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0415, 1200
+    END
+END
 
 IDR_VIGEM_DLL     RCDATA "../../python/vigem/x64/ViGEmClient.dll"
 IDR_VIGEM_LICENSE RCDATA "../../python/vigem/LICENSE-vgamepad.txt"
 
-IDR_FW_INO   RCDATA "../../../firmware/kierownica/kierownica.ino"
-IDR_FW_USB_H RCDATA "../../../firmware/kierownica/g29_usb.h"
-IDR_FW_BAT   RCDATA "../../../firmware/kierownica/wgraj_firmware.bat"
-IDR_FW_PS1   RCDATA "../../../firmware/kierownica/wgraj_firmware.ps1"
+IDR_FW_INO     RCDATA "../../../firmware/kierownica/kierownica.ino"
+IDR_FW_USB_H   RCDATA "../../../firmware/kierownica/g29_usb.h"
+IDR_FW_BAT     RCDATA "../../../firmware/kierownica/wgraj_firmware.bat"
+IDR_FW_PS1     RCDATA "../../../firmware/kierownica/wgraj_firmware.ps1"
+IDR_FW_PINY    RCDATA "../../../firmware/kierownica/piny.h"
+IDR_FW_RAPORT  RCDATA "../../../firmware/kierownica/g29_raport.h"
+IDR_FW_TINYUSB RCDATA "../../../firmware/kierownica/g29_tinyusb.h"

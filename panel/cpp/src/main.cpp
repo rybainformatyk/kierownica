@@ -4,6 +4,8 @@
 //   Kierownica.exe --minimized           start zminimalizowany (autostart)
 //   Kierownica.exe --config plik.json    inny plik ustawien
 //   Kierownica.exe --selftest katalog    test bez okna i bez sprzetu
+//   Kierownica.exe --po-aktualizacji     start po aktualizacji z panelu (czeka,
+//                                        az stara wersja sie zamknie)
 #include <windows.h>
 
 #include <shellapi.h>
@@ -26,6 +28,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     for (int i = 1; i < argc; ++i) {
         std::wstring arg = argv[i];
         if (arg == L"--minimized") options.minimized = true;
+        else if (arg == L"--po-aktualizacji") options.after_update = true;
         else if (arg == L"--config" && i + 1 < argc) set_config_path_override(argv[++i]);
         else if (arg == L"--selftest" && i + 1 < argc) options.selftest_dir = argv[++i];
     }
@@ -49,7 +52,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 
         // Druga kopia walczylaby z pierwsza o port COM i o urzadzenie vJoy -
         // zamiast niej na wierzch idzie okno, ktore juz dziala.
-        if (!winsys::claim_single_instance()) {
+        // Po aktualizacji stara wersja moze sie jeszcze zamykac (zatrzymuje
+        // silnik, zapisuje ustawienia) - czekamy na nia do 15 s.
+        bool claimed = winsys::claim_single_instance();
+        for (int i = 0; !claimed && options.after_update && i < 60; ++i) {
+            Sleep(250);
+            claimed = winsys::claim_single_instance();
+        }
+        if (!claimed) {
             if (!winsys::bring_to_front(title)) MessageBoxW(nullptr, L"Panel kierownicy już działa.", title.c_str(), MB_OK | MB_ICONINFORMATION);
             return 0;
         }

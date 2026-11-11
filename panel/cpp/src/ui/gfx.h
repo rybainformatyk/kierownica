@@ -152,6 +152,9 @@ public:
 
     // Tlo tresci: ledwo widoczna poswiata z ditheringiem, bez widocznych pasow.
     void backdrop(float x, float y);
+    // Ikona z zasobow programu (np. IDI_APP) w prostokacie dst - wczytywana
+    // w rozmiarze dla biezacego DPI, wiec zostaje ostra.
+    void icon(int resource_id, const Rect& dst, float alpha = 1.0f);
 
     void draw_sprite(const Sprite& s, float dx = 0, float dy = 0);
     void draw_sprite_rotated(const Sprite& s, float cx, float cy, float deg);
