@@ -1766,6 +1766,44 @@ bool PanelApp::selftest_checks(std::string& report) {
     go_tab(TAB_DASH);
     refresh();
 
+    // --- pole tekstowe: wpis zatwierdza Enter i klik obok, Esc cofa ---
+    // (wczesniej odswiezanie strony nadpisywalo wpisane impulsy enkodera)
+    {
+        std::vector<std::string> commits;
+        Entry entry("2400", 10, [&](const std::string& t) { commits.push_back(t); });
+        auto type = [&](const char* text) {
+            entry.mouse_down(0, 0);
+            for (int i = 0; i < 8; ++i) entry.key_down(VK_BACK);
+            for (const char* c = text; *c; ++c) entry.char_input(static_cast<wchar_t>(*c));
+        };
+        type("3600");
+        entry.key_down(VK_RETURN);
+        check(commits.size() == 1 && commits.back() == "3600" && Ui::get().focus() == nullptr, "pole: Enter zatwierdza wpis");
+        type("1000");
+        Ui::get().set_focus(nullptr);  // klik w przycisk "Zapisz" albo obok
+        check(commits.size() == 2 && commits.back() == "1000", "pole: utrata fokusu zatwierdza wpis");
+        type("777");
+        entry.key_down(VK_ESCAPE);
+        check(commits.size() == 2 && entry.text() == "1000", "pole: Esc cofa wpis bez zatwierdzania");
+        entry.mouse_down(0, 0);
+        entry.key_down(VK_RETURN);
+        check(commits.size() == 2, "pole: Enter bez zmian niczego nie zatwierdza");
+
+        // cala sciezka na zakladce Kierownica: wpis -> config -> przeliczanie kata
+        go_tab(TAB_STEER);
+        refresh();
+        int before = cfg_.steer.counts_per_rev;
+        auto* wheel = static_cast<WheelPage*>(page_list_[TAB_STEER].get());
+        wheel->apply_cpr("3600");
+        check(cfg_.steer.counts_per_rev == 3600 && engine_->live()->steer.counts_per_rev == 3600, "impulsy enkodera: zmiana trafia do silnika");
+        wheel->apply_cpr("abc");
+        check(cfg_.steer.counts_per_rev == 3600, "impulsy enkodera: zly wpis nie zmienia ustawienia");
+        cfg_.steer.counts_per_rev = before;
+        engine_->apply_config();
+        go_tab(TAB_DASH);
+        refresh();
+    }
+
     // --- zasobnik: podpowiedz ikony mowi, co sie dzieje ---
     {
         Frame f;

@@ -113,9 +113,10 @@ public:
     using Page::Page;
     std::unique_ptr<Widget> build() override;
     void refresh(const Frame& f, bool visible) override;
+    // Impulsy na obrot z pola tekstowego (Enter, klik obok, "Zapisz").
+    void apply_cpr(const std::string& text);
 
 private:
-    void apply_cpr();
     void detect_cpr();
 
     Segmented* presets_ = nullptr;
