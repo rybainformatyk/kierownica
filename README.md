@@ -6,6 +6,8 @@ kierownicę jako **Logitech G29**, wirtualny joystick vJoy albo pad Xbox 360.
 Kalibracja, mapowanie przycisków i Force Feedback są ustawiane w aplikacji,
 więc zmiana ustawień nie wymaga ponownego wgrywania firmware.
 
+![Panel kierownicy - Pulpit](docs/zrzuty/pulpit.png)
+
 ## Struktura
 
 ```
@@ -92,6 +94,20 @@ Due i ESP32 mają logikę 3,3 V - potencjometry zasilaj z 3,3 V, nie z 5 V.
   SHA-256, instaluje i uruchamia się ponownie z tymi samymi ustawieniami.
 * Ustawienia: `%APPDATA%\KierownicaPanel\config.json` (wersja przenośna -
   obok programu).
+
+## Zrzuty ekranu
+
+| | |
+|---|---|
+| ![Kierownica](docs/zrzuty/kierownica.png) | ![Pedały](docs/zrzuty/pedaly.png) |
+| **Kierownica** - zakres obrotu, impulsy enkodera, charakterystyka | **Pedały** - kreator kalibracji, martwe strefy, krzywe |
+| ![G29](docs/zrzuty/g29.png) | ![Pad](docs/zrzuty/pad.png) |
+| **G29** - przyciski kierownicy G29, przypisywane po kolei | **Pad** - wirtualny pad Xbox 360 |
+| ![Force Feedback](docs/zrzuty/ffb.png) | |
+| **Force Feedback** - siła, efekty z gry i lokalne | |
+
+Zrzuty pochodzą z trybu testowego panelu (symulowana płytka). Odświeżysz je
+poleceniem `py -3 panel\cpp\tools\make_screenshots.py`.
 
 ## Budowanie i wydanie
 
