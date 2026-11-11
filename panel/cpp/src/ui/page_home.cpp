@@ -132,7 +132,7 @@ std::unique_ptr<Widget> HomePage::build() {
     // w waskim oknie pedaly schodza pod kierownice
     auto row = mk<Columns>(std::vector<float>{1.0f, -PEDALS_W}, 520.0f, 32.0f);
     auto wheel = mk<Box>(true);
-    dial_ = wheel->add(mk<WheelDial>(256.0f), Pack{.right = 28, .cross = Pack::Center});
+    dial_ = wheel->add(mk<WheelDial>(264.0f), Pack{.right = 28, .cross = Pack::Center});
     dial_->set_range(cfg.steer.range_deg);
 
     auto info = mk<Box>(false);
@@ -141,7 +141,7 @@ std::unique_ptr<Widget> HomePage::build() {
     angle->set_fixed_width(230);
     angle_ = info->add(std::move(angle), Pack{.top = 2});
     auto range = mk<Label>("zakres 900°", Font::Small, MUTED);
-    range->set_fixed_width(200);
+    range->set_fixed_width(230);
     range_ = info->add(std::move(range), Pack{.bottom = 14});
     counts_ = info->add(mk<StatRow>("Impulsy enkodera"));
     axis_ = info->add(mk<StatRow>("Oś wyjściowa"));
@@ -305,7 +305,11 @@ void HomePage::refresh(const Frame& f, bool visible) {
     trace_->set_live(f.live);
 
     dial_->set_range(cfg.steer.range_deg);
-    range_->set(std::format("zakres {}°", cfg.steer.range_deg));
+    // liczba dogania nowy zakres razem ze skala tarczy
+    bool settling = std::abs(dial_->shown_range() - cfg.steer.range_deg) >= 0.5;
+    std::string turns = std::format("{:.2f}", dial_->shown_range() / 360.0);
+    std::replace(turns.begin(), turns.end(), '.', ',');
+    range_->set(std::format("zakres {:.0f}°  ·  {} obrotu", dial_->shown_range(), turns), settling ? ACCENT_HI : MUTED);
     int selected = -1;
     for (size_t i = 0; i < RANGE_PRESETS.size(); ++i)
         if (RANGE_PRESETS[i] == cfg.steer.range_deg) selected = static_cast<int>(i);

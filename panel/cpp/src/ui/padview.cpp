@@ -68,15 +68,15 @@ constexpr float TRIGGER_SPAN0 = 0.08f, TRIGGER_SPAN1 = 0.64f;
 constexpr float TRIGGER_RISE = 23.0f, TRIGGER_TUCK = 3.0f;
 constexpr int TRIGGER_STEPS = 24;
 
-// paleta ze zdjecia
-constexpr RGB BODY_TOP = 0x2c2e32, BODY_BOTTOM = 0x191a1d;
-constexpr RGB VISOR_TOP = 0x34363a, VISOR_BOTTOM = 0x222326;
-constexpr RGB GRIP = 0x24262a, RECESS = 0x0d0e10, LETTER = 0x8b8e94;
+// grafit z odcieniem niebieskiego - ten sam co reszta panelu
+constexpr RGB BODY_TOP = 0x303641, BODY_BOTTOM = 0x171b22;
+constexpr RGB VISOR_TOP = 0x383f4b, VISOR_BOTTOM = 0x232831;
+constexpr RGB GRIP = 0x1f242c, RECESS = 0x0c0e12, LETTER = 0x8d96a5;
 constexpr RGB INK = 0x0b0e14;
 
 CapStyle gloss_style() {
     CapStyle s{};
-    s.top = 0x2e3034; s.bottom = 0x08090a; s.edge = 0x000000; s.on = ACCENT;
+    s.top = 0x333a46; s.bottom = 0x0a0c10; s.edge = 0x000000; s.on = ACCENT;
     s.glyph = LETTER; s.glyph_on = ACCENT_INK; s.accent = ACCENT; s.warn = WARN; s.ink = 0x20160a;
     s.gloss = true; s.has_assigned = true; s.assigned = mix(0x000000, ACCENT, 0.30);
     return s;
@@ -322,7 +322,7 @@ Glyph stick_ticks(float x, float y) {
     return [=](Paint& p, RGB) {
         p.arc(x, y, STICK_RING - 2.0f, 200, 340, BLACK, 4.0f, 170);
         p.arc(x, y, STICK_RING - 1.0f, 25, 155, WHITE, 1.3f, 55);
-        p.stroke(Shape::circle(x, y, STICK_RING), 0x4a4c50, 1.0f, 110);
+        p.stroke(Shape::circle(x, y, STICK_RING), 0x4a5262, 1.0f, 110);
     };
 }
 
@@ -330,8 +330,10 @@ Glyph knob_glyph(float x, float y) {
     float r = STICK_KNOB;
     return [=](Paint& p, RGB color) {
         if (color == BLACK) {
-            p.gradient(Shape::circle(x, y, r - 3.5f), 0x7a7d83, 0x2c2e32);
-            p.gradient(Shape::circle(x, y, r - 5.5f), 0x0b0c0d, 0x2e3034);
+            // wklesla czasza z jasnym rantem
+            p.gradient(Shape::circle(x, y, r - 3.5f), 0x707a8b, 0x272c35);
+            p.gradient(Shape::circle(x, y, r - 5.5f), 0x0a0c10, 0x2d333d);
+            p.radial(x, y + 4, r * 0.5f, WHITE, WHITE, 14, 0);
         }
         for (int k = 0; k < 44; ++k) {
             float a = 2 * PI * static_cast<float>(k) / 44;
@@ -342,10 +344,19 @@ Glyph knob_glyph(float x, float y) {
     };
 }
 
+// Faseta krzyzaka: wglebienie pod kciuk i strzalka kierunku.
 Glyph facet_glyph(float x, float y, float a0, float a1) {
-    return [=](Paint& p, RGB) {
-        p.fill(Shape::ring(x, y, DPAD_R - 8.0f, DPAD_HUB + 6.0f, a0 + 9.0f, a1 - 9.0f), WHITE, 26);
-        p.arc(x, y, DPAD_R - 1.2f, a0 + 2.0f, a1 - 2.0f, WHITE, 1.0f, 50);
+    float mid = rad((a0 + a1) / 2);
+    float ux = std::cos(mid), uy = std::sin(mid);
+    float rr = DPAD_R * 0.66f, size = 4.6f;
+    Pt c{x + ux * rr, y + uy * rr};
+    Pt tip{c.x + ux * size, c.y + uy * size};
+    Pt left{c.x - ux * size * 0.7f - uy * size, c.y - uy * size * 0.7f + ux * size};
+    Pt right{c.x - ux * size * 0.7f + uy * size, c.y - uy * size * 0.7f - ux * size};
+    return [=](Paint& p, RGB color) {
+        p.fill(Shape::ring(x, y, DPAD_R - 7.0f, DPAD_HUB + 5.0f, a0 + 8.0f, a1 - 8.0f), BLACK, 40);
+        p.arc(x, y, DPAD_R - 1.2f, a0 + 2.0f, a1 - 2.0f, WHITE, 1.0f, 46);
+        p.fill(Shape::poly({tip, left, right}), color);
     };
 }
 
@@ -410,8 +421,10 @@ Glyph menu_glyph(float x, float y) {
     };
 }
 
+// Podswietlany pierscien - przycisk glowny swieci od spodu.
 Glyph guide_glyph(float x, float y) {
     return [=](Paint& p, RGB color) {
+        p.glow(Shape::ring(x, y, GUIDE_R * 0.56f + 1.1f, GUIDE_R * 0.56f - 1.1f, 0, 360), color, 5, 150);
         p.stroke(Shape::circle(x, y, GUIDE_R * 0.56f), color, 2.2f);
         p.fill(Shape::circle(x, y, GUIDE_R * 0.2f), color);
     };
@@ -468,9 +481,20 @@ void paint_pad_body(Paint& p) {
         p.push_clip(body);
         p.push_clip(grip);
         p.fill(grip, GRIP);
-        float h = static_cast<float>(p.height()), w = static_cast<float>(p.width());
-        float k = -s;  // prazki w strone srodka pada
-        for (float x = -h; x < w + h; x += 3.2f) p.line({{x, 0}, {x + k * h * 0.6f, h}}, WHITE, 0.5f, 14, false);
+        // gumowa faktura: drobne wytloczone kropki w ukladzie plastra
+        float gx1, gy1, gx2, gy2;
+        grip.bbox(gx1, gy1, gx2, gy2);
+        gx1 = std::max(gx1, 0.0f);
+        gy1 = std::max(gy1, 0.0f);
+        gx2 = std::min(gx2, static_cast<float>(p.width()));
+        gy2 = std::min(gy2, static_cast<float>(p.height()));
+        int row = 0;
+        for (float y = gy1 + 2; y < gy2; y += 3.4f, ++row)
+            for (float x = gx1 + 2 + (row % 2 ? 1.95f : 0.0f); x < gx2; x += 3.9f) {
+                if (!grip.contains(x, y) || !body.contains(x, y)) continue;
+                p.fill(Shape::circle(x, y + 0.5f, 0.8f), WHITE, 12);
+                p.fill(Shape::circle(x, y, 0.8f), BLACK, 120);
+            }
         p.pop_clip();
         p.pop_clip();
 
@@ -497,21 +521,19 @@ void paint_pad_body(Paint& p) {
     std::sort(edge_top.begin(), edge_top.end(), [](const Pt& a, const Pt& b) { return a.x < b.x; });
     p.line(edge_top, WHITE, 1.1f, 60);
 
-    // gniazdo krzyzaka: podzialka dookola talerza
+    // gniazdo krzyzaka: wpuszczona misa z jasnym rantem
     float dx = CX + DPAD_C.x, dy = CY + DPAD_C.y;
-    p.shadow(Shape::circle(dx, dy, DPAD_R), 4, 4, 200);
-    for (int k = 0; k < 16; ++k) {
-        float a = rad(static_cast<float>(k) * 22.5f);
-        float r0 = DPAD_R + 4.5f, r1 = DPAD_R + (k % 2 == 0 ? 9.0f : 7.0f);
-        p.line({{dx + r0 * std::cos(a), dy + r0 * std::sin(a)}, {dx + r1 * std::cos(a), dy + r1 * std::sin(a)}}, 0x5c5e63, 1.1f, 200, false);
-    }
-    p.gradient(Shape::circle(dx, dy, DPAD_HUB), 0x9a9ca0, 0x55575b);
-    p.stroke(Shape::circle(dx, dy, DPAD_HUB), 0x2a2b2e, 1.0f);
+    Shape well = Shape::circle(dx, dy, DPAD_R + 5);
+    p.gradient(well, 0x0b0d11, 0x2a303a);
+    p.arc(dx, dy, DPAD_R + 4.5f, 30, 150, WHITE, 1.0f, 40);
+    p.shadow(Shape::circle(dx, dy, DPAD_R), 3, 4, 200);
+    p.gradient(Shape::circle(dx, dy, DPAD_HUB), 0x4d5563, 0x22272f);
+    p.stroke(Shape::circle(dx, dy, DPAD_HUB), 0x0d0f13, 1.0f);
 
     // ozdoby: Share i diody profilu
     Shape share = Shape::rrect(CX + SHARE_C.x - SHARE_HW, CY + SHARE_C.y - SHARE_HH, CX + SHARE_C.x + SHARE_HW, CY + SHARE_C.y + SHARE_HH, SHARE_HH);
     p.shadow(share, 1.5f, 2, 170);
-    p.gradient(share, 0x2e3034, 0x0a0b0c);
+    p.gradient(share, 0x323844, 0x0a0c10);
     p.stroke(share, BLACK, 1.0f);
     p.sheen(share, 40, 0.5f);
     for (const Pt& led : {ph(640, 492), ph(640, 508), ph(640, 524)}) {
@@ -566,13 +588,13 @@ void PadCanvas::build_parts() {
     CapStyle gloss = gloss_style();
     CapStyle small_style = gloss;
     small_style.glyph = 0xc4c6ca;
-    CapStyle guide = assigned_edge(with(gloss, 0xeeeef0, 0xb4b6ba, 0x5d5f63, 0x2a2b2e, true), 0x5d5f63);
-    CapStyle metal = assigned_edge(with(gloss, 0x74767b, 0x3a3c40, 0x202124, 0xe6e7ea, false), 0x202124);
-    CapStyle bumper = with(gloss, 0x62656b, 0x232428, 0x000000, 0xd4d6da, false);
+    CapStyle guide = assigned_edge(with(gloss, 0x3b4350, 0x14171d, 0x07080b, 0xeef3fa, true), 0x07080b);
+    CapStyle metal = assigned_edge(with(gloss, 0x6f7889, 0x363d49, 0x1c2027, 0xe6eaf0, false), 0x1c2027);
+    CapStyle bumper = with(gloss, 0x525a68, 0x1f232b, 0x000000, 0xd4d9e0, false);
     CapStyle trigger = metal;
-    trigger.top = 0x45474c; trigger.bottom = 0x18191b; trigger.edge = 0x050506;
-    CapStyle well = assigned_edge(with(gloss, RECESS, 0x222327, 0x2f3034, 0x3a3c40, false), 0x2f3034);
-    CapStyle cap = assigned_edge(with(gloss, 0x45474c, 0x141517, 0x050506, 0x000000, false), 0x050506);
+    trigger.top = 0x434a57; trigger.bottom = 0x16191f; trigger.edge = 0x050608;
+    CapStyle well = assigned_edge(with(gloss, RECESS, 0x20252d, 0x2e3440, 0x3a414d, false), 0x2e3440);
+    CapStyle cap = assigned_edge(with(gloss, 0x434a57, 0x12151a, 0x050608, 0x000000, false), 0x050608);
 
     // spusty: garby wyrastajace zza bumperow
     for (const char* name : {"LT", "RT"}) {
@@ -592,25 +614,34 @@ void PadCanvas::build_parts() {
     add("LS", Shape::circle(CX + STICK_L.x, CY + STICK_L.y, STICK_KNOB), cap, knob_glyph(CX + STICK_L.x, CY + STICK_L.y));
     add("RS", Shape::circle(CX + STICK_R.x, CY + STICK_R.y, STICK_KNOB), cap, knob_glyph(CX + STICK_R.x, CY + STICK_R.y));
 
-    // krzyzak: metalowy talerz z czterema fasetami (kazda swieci osobno)
+    // krzyzak: ciemny talerz z czterema fasetami (kazda swieci osobno);
+    // swiatlo z gory - gorna faseta najjasniejsza
     float dx = CX + DPAD_C.x, dy = CY + DPAD_C.y;
     struct Facet { const char* name; float a0, a1; RGB top, bottom; };
-    const Facet facets[] = {{"DPAD_UP", -135, -45, 0xd2d3d6, 0x8d8f93},
-                            {"DPAD_RIGHT", -45, 45, 0x83858a, 0x4f5155},
-                            {"DPAD_DOWN", 45, 135, 0x64666a, 0x38393d},
-                            {"DPAD_LEFT", 135, 225, 0xa9abaf, 0x6c6e72}};
+    const Facet facets[] = {{"DPAD_UP", -135, -45, 0x4a5260, 0x323843},
+                            {"DPAD_RIGHT", -45, 45, 0x3f4653, 0x262b34},
+                            {"DPAD_DOWN", 45, 135, 0x343a46, 0x1d2128},
+                            {"DPAD_LEFT", 135, 225, 0x434a57, 0x2a2f38}};
     for (const Facet& f : facets) {
-        CapStyle style = assigned_edge(metal, 0x1f2023);
-        style.top = f.top; style.bottom = f.bottom; style.edge = 0x1f2023;
+        CapStyle style = assigned_edge(metal, 0x111318);
+        style.top = f.top; style.bottom = f.bottom; style.edge = 0x111318; style.glyph = 0xaab3c2;
         add(f.name, Shape::ring(dx, dy, DPAD_R, DPAD_HUB, f.a0, f.a1), style, facet_glyph(dx, dy, f.a0, f.a1), true, false);
     }
 
     // przyciski A B X Y: blyszczaca czern z wytloczona litera
     float fx = CX + FACE_C.x, fy = CY + FACE_C.y, off = FACE_OFFSET;
-    struct Face { const char* name; float ox, oy; };
-    for (const Face& f : {Face{"Y", 0, -off}, Face{"X", -off, 0}, Face{"B", off, 0}, Face{"A", 0, off}}) {
+    // (litery w kolorach z listy przypisan - latwiej trafic wzrokiem)
+    struct Face { const char* name; float ox, oy; RGB color; };
+    for (const Face& f : {Face{"Y", 0, -off, 0xf0c419}, Face{"X", -off, 0, 0x3f9be8}, Face{"B", off, 0, 0xe8534a}, Face{"A", 0, off, 0x5ac25a}}) {
         float x = fx + f.ox, y = fy + f.oy;
-        add(f.name, Shape::circle(x, y, FACE_R), gloss, text_glyph(x, y + 0.5f, f.name, 12, true));
+        CapStyle style = gloss;
+        style.glyph = lighten(f.color, 0.12);
+        Glyph letter = text_glyph(x, y + 0.5f, f.name, 12, true);
+        Glyph glyph = [=](Paint& p, RGB color) {
+            p.stroke(Shape::circle(x, y, FACE_R - 2.5f), color, 1.0f, 70);  // podswietlony rant
+            letter(p, color);
+        };
+        add(f.name, Shape::circle(x, y, FACE_R), style, std::move(glyph));
     }
 
     // View i Menu: male blyszczace przyciski z jasnymi ikonami
@@ -858,23 +889,52 @@ void WheelCanvas::paint_body(Paint& p) {
     // obrecz z gumy: cien, gradient, polysk i przeszycie
     Shape rim = Shape::ring(WCX, WCY, RIM_OUT, RIM_IN, -90, 270);
     p.shadow(rim, 10, 10, 170);
-    p.gradient(rim, 0x3a4250, 0x161a21);
-    p.sheen(rim, 40, 0.35f);
+    p.gradient(rim, 0x424a59, 0x14181e);
+    // uchwyty po bokach: ciemniejsza, perforowana skora z przeszyciem na koncach
+    for (float ctr : {0.0f, 180.0f}) {
+        Shape grip = Shape::ring(WCX, WCY, RIM_OUT - 1, RIM_IN + 1, ctr - 40, ctr + 40);
+        p.gradient(grip, 0x2a303a, 0x0f1217);
+        int row = 0;
+        for (float rr = RIM_IN + 5; rr <= RIM_OUT - 4.5f; rr += 4.0f, ++row)
+            for (float deg = ctr - 37 + (row % 2 ? 1.2f : 0.0f); deg <= ctr + 37; deg += 2.4f)
+                p.fill(Shape::circle(WCX + rr * std::cos(rad(deg)), WCY + rr * std::sin(rad(deg)), 0.8f), BLACK, 130);
+        for (float deg : {ctr - 40, ctr + 40})
+            p.line({{WCX + (RIM_IN + 2) * std::cos(rad(deg)), WCY + (RIM_IN + 2) * std::sin(rad(deg))},
+                    {WCX + (RIM_OUT - 2) * std::cos(rad(deg)), WCY + (RIM_OUT - 2) * std::sin(rad(deg))}}, 0x9aa5b8, 1.3f, 150, false);
+    }
+    p.sheen(rim, 46, 0.35f);
     float mid = (RIM_OUT + RIM_IN) / 2;
     for (int k = 0; k < 120; ++k) {
-        float a = rad(static_cast<float>(k) * 3.0f), b = rad(static_cast<float>(k) * 3.0f + 1.4f);
-        p.line({{WCX + mid * std::cos(a), WCY + mid * std::sin(a)}, {WCX + mid * std::cos(b), WCY + mid * std::sin(b)}}, WHITE, 0.9f, 28);
+        float deg = static_cast<float>(k) * 3.0f;
+        if (std::fmod(deg + 42.0f, 180.0f) < 84.0f) continue;  // pod uchwytem szwu nie ma
+        float a = rad(deg), b = rad(deg + 1.4f);
+        p.line({{WCX + mid * std::cos(a), WCY + mid * std::sin(a)}, {WCX + mid * std::cos(b), WCY + mid * std::sin(b)}}, WHITE, 0.9f, 40);
     }
-    p.stroke(Shape::circle(WCX, WCY, RIM_OUT), WHITE, 1.0f, 30);
+    p.stroke(Shape::circle(WCX, WCY, RIM_OUT), WHITE, 1.0f, 34);
+    p.arc(WCX, WCY, RIM_IN + 0.9f, 0, 360, BLACK, 1.8f, 120);
 
-    // plyta z przyciskami i dolne ramie - jedna bryla
+    // plyta z przyciskami i dolne ramie - jedna bryla ze szczotkowanego aluminium
     Shape plate = Shape::rrect(WCX + PLATE[0], WCY + PLATE[1], WCX + PLATE[2], WCY + PLATE[3], PLATE[4]);
     Shape spoke = Shape::rrect(WCX + SPOKE[0], WCY + SPOKE[1], WCX + SPOKE[2], WCY + SPOKE[3], SPOKE[4]);
     for (const Shape* s : {&spoke, &plate}) p.shadow(*s, 6, 7, 170);
     float top = WCY + PLATE[1], bottom = WCY + SPOKE[3];
-    for (const Shape* s : {&spoke, &plate}) p.gradient(*s, 0x4b5568, 0x262d38, top, bottom);
-    p.sheen(plate, 34, 0.5f);
-    p.stroke(plate, WHITE, 1.0f, 30);
+    for (const Shape* s : {&spoke, &plate}) {
+        p.gradient(*s, 0x515c70, 0x242a34, top, bottom);
+        p.push_clip(*s);
+        for (float y = top + 1; y < bottom; y += 2.5f) p.line({{WCX - 130, y}, {WCX + 130, y}}, WHITE, 0.5f, 10, false);
+        p.pop_clip();
+    }
+    p.sheen(plate, 38, 0.5f);
+    p.stroke(plate, WHITE, 1.0f, 34);
+    p.stroke(plate.grow(-4), BLACK, 1.0f, 50);
+    // sruby w rogach plyty
+    for (float sx : {-113.0f, 113.0f})
+        for (float sy : {-39.0f, 43.0f}) {
+            Shape screw = Shape::circle(WCX + sx, WCY + sy, 2.8f);
+            p.gradient(screw, 0x8a94a6, 0x2b313b);
+            p.stroke(screw, BLACK, 0.8f, 160);
+            p.line({{WCX + sx - 1.6f, WCY + sy - 1.0f}, {WCX + sx + 1.6f, WCY + sy + 1.0f}}, BLACK, 0.9f, 170, false);
+        }
     p.text(WCX, WCY - 10, "G29", 9, 0x8a95a8, true);
 
     // wglebienia pod krzyzakiem i pokretlem
@@ -989,7 +1049,11 @@ void WheelCanvas::paint_overlay(Gfx& g) {
         double v = pedals_[static_cast<size_t>(pedal_index(spot.key))];
         v = v != v ? 0.0 : std::max(0.0, std::min(1.0, v));
         float len = static_cast<float>(v) * span;
-        if (len >= 2) g.fill_rect({ox + WCX + spot.x - h, oy + WCY + PEDAL_BOTTOM - 3 - len, 2 * h, len}, spot.color);
+        if (len >= 2) {
+            Rect fill{ox + WCX + spot.x - h, oy + WCY + PEDAL_BOTTOM - 3 - len, 2 * h, len};
+            g.shadow(fill, h, 6, spot.color, 0.30f);
+            g.fill_rrect_v(fill, h, lighten(spot.color, 0.22), mix(spot.color, BG, 0.25));
+        }
         g.text_at(ox + WCX + spot.x, oy + WCY + PEDAL_BOTTOM + 12, spot.text, Font::Micro, MUTED);
     }
     g.text_at(ox + WCX + PEDALS[1].x, oy + WCY + PEDAL_TOP - 16, "PEDAŁY", Font::TinyBold, MUTED);

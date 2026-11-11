@@ -114,7 +114,7 @@ private:
     void refresh_shell(const Frame& f);
 
     bool selftest_checks(std::string& report);
-    bool render_png(const std::filesystem::path& file);
+    bool render_png(const std::filesystem::path& file, float dt = 1.0f);
 
     AppOptions options_;
     AppConfig cfg_;
