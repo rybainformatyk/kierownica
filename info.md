@@ -1,5 +1,34 @@
 # Kierownica DIY - notatki z prac
 
+## 2026-11-11 — Publikacja wersji 3.2 na GitHubie
+
+### Co zrobione
+
+Zmiany wersji 3.2 trafiły do `main` przez PR #5 (gałąź `wersja-cpp`). Wydanie [v3.2](https://github.com/rybainformatyk/kierownica/releases/tag/v3.2) zawiera instalator ze sterownikami, wersję przenośną ZIP, `Kierownica.exe` i `SHA256SUMS.txt`. README (główne i `panel/cpp`) opisuje instalator ze sterownikami, pracę w tle, aktualizacje i licencje dołączonych sterowników (ViGEmBus BSD-3-Clause, vJoy MIT).
+
+### Jak to działa
+
+- Schemat repo: praca na `wersja-cpp`, PR do `main` scalany przez merge commit, tag `vX.Y` na commicie scalenia.
+- Publikacja: `panel\cpp\wydanie.bat`, potem `panel\cpp\opublikuj.bat` (albo ręcznie `gh release create vX.Y dist\... --target main --notes-file installer\NOWOSCI.md`).
+- `SHA256SUMS.txt` ma końce linii LF, bo `sha256sum -c` na Linuksie i w Git Bash nie radzi sobie z CRLF. Parser w panelu przyjmuje oba.
+
+### Dlaczego tak
+
+- Jest `SHA256SUMS.txt` i osobny `Kierownica.exe` — bez nich panele nie zaktualizują się same (instalacja wymaga sumy, wersja przenośna podmienia sam exe).
+
+### Jak przetestować
+
+```
+gh release download v3.2 -R rybainformatyk/kierownica -D rel && cd rel && sha256sum -c SHA256SUMS.txt
+set KIEROWNICA_LIVE=1 && panel\cpp\bin\tests\core_tests.exe    # "mozna instalowac: tak"
+```
+
+### Uwagi i pułapki
+
+- Panele 3.1 nie mają aktualizatora — użytkownicy 3.1 muszą raz ręcznie pobrać 3.2. Od 3.2 aktualizacje są automatyczne.
+- Pierwsza prawdziwa aktualizacja z panelu (3.2 → 3.3) dopiero przetestuje cały mechanizm end-to-end.
+
+
 ## 2026-11-11 — Instalator ze sterownikami, aktualizacje z panelu, ikony w Windowsie
 
 ### Co zrobione

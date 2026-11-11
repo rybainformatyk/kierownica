@@ -55,7 +55,7 @@ if not exist "%ISCC%" (
 )
 
 powershell -NoProfile -Command ^
-  "Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content -Encoding ASCII dist\SHA256SUMS.txt; Get-Content dist\SHA256SUMS.txt"
+  "$sums = Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name }; [IO.File]::WriteAllText((Join-Path (Get-Location) 'dist\SHA256SUMS.txt'), (($sums -join [char]10) + [char]10)); Get-Content dist\SHA256SUMS.txt"
 
 echo.
 echo Gotowe: %~dp0dist
