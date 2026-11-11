@@ -99,6 +99,8 @@ Due i ESP32 mają logikę 3,3 V - potencjometry zasilaj z 3,3 V, nie z 5 V.
 
 | | |
 |---|---|
+| ![Pulpit](docs/zrzuty/pulpit.png) | ![Menu trybu wyjścia](docs/zrzuty/menu.png) |
+| **Pulpit** - ekran główny: kąt, pedały, wykresy, stan systemu | **Menu trybu wyjścia** - G29, vJoy, pad Xbox 360 albo kilka naraz |
 | ![Kierownica](docs/zrzuty/kierownica.png) | ![Pedały](docs/zrzuty/pedaly.png) |
 | **Kierownica** - zakres obrotu, impulsy enkodera, charakterystyka | **Pedały** - kreator kalibracji, martwe strefy, krzywe |
 | ![G29](docs/zrzuty/g29.png) | ![Pad](docs/zrzuty/pad.png) |
