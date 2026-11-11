@@ -48,16 +48,6 @@ std::string fmt_duration(double seconds) {
     return h ? std::format("{}:{:02d}:{:02d}", h, m, s) : std::format("{}:{:02d}", m, s);
 }
 
-fs::path exe_path() {
-    wchar_t buf[32768];
-    DWORD n = GetModuleFileNameW(nullptr, buf, 32768);
-    return fs::path(std::wstring(buf, n));
-}
-
-std::wstring lower(std::wstring s) {
-    if (!s.empty()) CharLowerBuffW(s.data(), static_cast<DWORD>(s.size()));
-    return s;
-}
 
 RGB level_color(const std::string& level) {
     if (level == "ok") return GOOD;
@@ -109,34 +99,58 @@ std::unique_ptr<Widget> DiagPage::build() {
     rows_["port"] = c1->body->add(mk<StatRow>("Port"));
     rows_["fw"] = c1->body->add(mk<StatRow>("Firmware"), Pack{.bottom = 4});
     bind_slider_int(c1->body, "Częstotliwość ramek płytki", "", 50, 500, &cfg.link.report_hz, Unit{0, " Hz", 1.0}, 10, LinkConfig{}.report_hz, [this] { app_.engine().apply_config(); });
+    // plytka dla skryptu wgrywania; "automatycznie" = wedlug HELLO podlaczonej plytki
+    std::vector<std::string> boards = {"Automatycznie (podłączona płytka)"};
+    int board_index = 0;
+    for (size_t i = 0; i < protocol::BOARDS.size(); ++i) {
+        boards.push_back(protocol::BOARDS[i].label);
+        if (cfg.link.board == protocol::BOARDS[i].key) board_index = static_cast<int>(i) + 1;
+    }
+    add_row(c1->body, "Płytka", "Due, Mega, Uno, Nano, Leonardo, Micro, ESP32, ESP32-S3. Piny każdej płytki: firmware/kierownica/piny.h.",
+            mk<Combo>(boards, board_index, [this](int i) { app_.cfg().link.board = i > 0 ? protocol::BOARDS[static_cast<size_t>(i - 1)].key : ""; }, 24));
     // wgrywanie firmware bez zamykania panelu - port zwalnia sam panel
     auto flash = mk<Button>(std::string("Wgraj firmware ") + protocol::FW_LATEST_TEXT, Button::Normal, [this] { app_.flash_firmware(); });
     flash->set_icon(ic::download);
     btn_flash_ = flash.get();
     btn_flash_->set_enabled(app_.firmware_available());
-    add_row(c1->body, "Firmware płytki", "Zwalnia port, otwiera okno wgrywania (wgraj_firmware.bat) i łączy się ponownie, gdy je zamkniesz.", std::move(flash));
+    add_row(c1->body, "Firmware płytki", "Zwalnia port, otwiera okno wgrywania i łączy się ponownie, gdy je zamkniesz. Brakującą obsługę płytki (np. ESP32) skrypt doinstaluje sam.", std::move(flash));
     left->add(std::move(c1), Pack{.bottom = 16});
 
     auto c0 = mk<Card>("Uruchamianie");
     auto autostart = mk<Toggle>(false, [this](bool v) { on_autostart(v); });
     autostart_ = autostart.get();
-    add_row(c0->body, "Uruchamiaj razem z Windowsem", "Panel startuje zminimalizowany i sam łączy się z płytką. W trybie G29 gry widzą kierownicę tylko wtedy, gdy panel działa.", std::move(autostart));
+    add_row(c0->body, "Uruchamiaj razem z Windowsem", "Panel startuje w tle (ikona obok zegara) i sam łączy się z płytką. Gry widzą kierownicę tylko wtedy, gdy panel działa.", std::move(autostart));
     autostart_other_ = c0->body->add(mk<Label>("", Font::Small, WARN, 2000.0f), Pack{.top = 6});
     autostart_other_->visible = false;
+    bind_toggle(c0->body, "Działaj w tle po zamknięciu okna", "Krzyżyk chowa panel do zasobnika obok zegara, a kierownica dalej działa w grach. Całkiem zamyka go Zakończ w menu ikony.", &cfg.ui.tray);
     c0->body->add(mk<Label>("KONFIGURACJA", Font::Caps, MUTED), Pack{.top = 12, .bottom = 3});
     config_ = c0->body->add(mk<Label>(narrow(config_path().wstring()), Font::MonoSmall, TEXT_DIM, 2000.0f));
-    left->add(std::move(c0));
+    left->add(std::move(c0), Pack{.bottom = 16});
     sync_autostart();
+
+    auto c2 = mk<Card>("Aktualizacje");
+    bool installed = app_.updater().kind() == update::InstallKind::Installer;
+    c2->body->add(mk<Label>(std::format("Panel {} · {} · firmware w programie {}", APP_VERSION, installed ? "zainstalowany" : "wersja przenośna", protocol::FW_LATEST_TEXT),
+                            Font::Small, TEXT_DIM, 2000.0f), Pack{.bottom = 4});
+    update_status_ = c2->body->add(mk<Label>("Jeszcze nie sprawdzano", Font::Small, MUTED, 2000.0f), Pack{.bottom = 8});
+    auto update = mk<Button>("Sprawdź aktualizacje", Button::Normal, [this] { app_.update_action(); });
+    update->set_icon(ic::refresh);
+    btn_update_ = update.get();
+    add_row(c2->body, "Nowa wersja panelu", "Z wydań na GitHubie. Pobrany plik jest sprawdzany sumą SHA-256, a ustawienia zostają.", std::move(update));
+    bind_toggle(c2->body, "Sprawdzaj przy starcie", "Raz, chwilę po uruchomieniu panelu. Bez pytania niczego nie instaluje.", &cfg.ui.updates);
+    left->add(std::move(c2));
     cols->add(std::move(left));
 
     // --- prawa kolumna ---
     auto right = mk<Box>(false);
-    auto g29 = mk<Card>("Kierownica G29 (Native USB)");
+    auto g29 = mk<Card>("Kierownica G29 (USB płytki)");
     const std::pair<const char*, const char*> g29_list[] = {{"fw", "Firmware z trybem G29"}, {"usb", "Windows widzi G29"}, {"feed", "Raporty z aplikacji"}, {"game", "Komendy od gry"}};
     for (const auto& [key, label] : g29_list) g29_rows_[key] = g29->body->add(mk<StatRow>(label));
     report_ = g29->body->add(mk<Label>("raport: -", Font::Mono, TEXT_DIM), Pack{.top = 6, .bottom = 4, .cross = Pack::Start});
     bind_toggle(g29->body, "Pedały jak w oryginalnym G29", "255 = puszczony. Profile gier dla G29 tego oczekują.", &cfg.g29.pedals_inverted);
-    g29->body->add(note("Podłącz dwa kable: Programming Port (łącze z tą aplikacją) i Native USB (kierownica dla gier). Gdy aplikacja jest zamknięta, G29 stoi w pozycji spoczynkowej - kalibrację i mapowanie liczy tylko ona."), Pack{.top = 8});
+    g29->body->add(note("Due: dwa kable - Programming Port (łącze z tą aplikacją) i Native USB (kierownica dla gier). Leonardo, Micro i ESP32-S3: jeden kabel. "
+                        "Uno, Nano, Mega i zwykłe ESP32 nie mają natywnego USB - działają w trybach vJoy i pad. "
+                        "Gdy aplikacja jest zamknięta, G29 stoi w pozycji spoczynkowej - kalibrację i mapowanie liczy tylko ona."), Pack{.top = 8});
     g29->body->add(note(G29_BUTTON_HELP), Pack{.top = 6});
     right->add(std::move(g29), Pack{.bottom = 16});
 
@@ -225,7 +239,7 @@ void DiagPage::copy_log() {
 void DiagPage::sync_autostart() {
     auto command = winsys::autostart_get();
     std::optional<std::wstring> target = command ? winsys::autostart_target(*command) : std::nullopt;
-    bool ours = target && lower(*target) == lower(exe_path().wstring());
+    bool ours = winsys::autostart_points_here();
     autostart_->set(ours);
     if (command && !ours) {
         autostart_other_->set("Teraz z Windowsem startuje inna kopia panelu: " + narrow(target ? *target : *command) + ". Włączenie przełączy autostart na tę kopię.");
@@ -236,12 +250,58 @@ void DiagPage::sync_autostart() {
 }
 
 void DiagPage::on_autostart(bool want) {
-    if (!winsys::autostart_set(want ? std::optional<std::wstring>(winsys::autostart_command(exe_path())) : std::nullopt)) {
+    if (!winsys::autostart_enable(want)) {
         app_.inform("Uruchamianie z Windowsem", "Nie udało się zmienić autostartu.", MB_ICONERROR);
     } else {
         app_.log(want ? "ok" : "info", want ? "Panel będzie startował razem z Windowsem" : "Panel nie startuje już razem z Windowsem");
     }
     sync_autostart();
+}
+
+void DiagPage::set_update(const update::State& s, update::InstallKind) {
+    using P = update::State::Phase;
+    std::string version = s.release ? s.release->version : "";
+    switch (s.phase) {
+    case P::Idle:
+        update_status_->set("Jeszcze nie sprawdzano", MUTED);
+        btn_update_->set("Sprawdź aktualizacje");
+        btn_update_->set_style(Button::Normal);
+        btn_update_->set_icon(ic::refresh);
+        btn_update_->set_enabled(true);
+        break;
+    case P::Checking:
+        update_status_->set(s.message, MUTED);
+        btn_update_->set("Sprawdzanie…");
+        btn_update_->set_enabled(false);
+        break;
+    case P::UpToDate:
+    case P::Failed:
+        update_status_->set(s.message, s.phase == P::UpToDate ? GOOD : WARN);
+        btn_update_->set("Sprawdź ponownie");
+        btn_update_->set_style(Button::Normal);
+        btn_update_->set_icon(ic::refresh);
+        btn_update_->set_enabled(true);
+        break;
+    case P::Available:
+        update_status_->set(s.message + (s.can_install ? "" : " - to wydanie trzeba pobrać ręcznie"), ACCENT);
+        btn_update_->set(s.can_install ? "Zaktualizuj do " + version : "Otwórz stronę wydania");
+        btn_update_->set_style(Button::Accent);
+        btn_update_->set_icon(s.can_install ? ic::download : ic::link);
+        btn_update_->set_enabled(true);
+        break;
+    case P::Downloading:
+        update_status_->set(s.message, ACCENT);
+        btn_update_->set(std::format("Pobieranie {:.0f}%", s.progress * 100.0));
+        btn_update_->set_enabled(false);
+        break;
+    case P::Ready:
+        update_status_->set(s.message, GOOD);
+        btn_update_->set("Zainstaluj " + version);
+        btn_update_->set_style(Button::Accent);
+        btn_update_->set_icon(ic::download);
+        btn_update_->set_enabled(true);
+        break;
+    }
 }
 
 void DiagPage::update_vjoy_text() {
@@ -309,11 +369,13 @@ void DiagPage::refresh_g29(const Frame& f) {
         report_->set("raport: -");
         return;
     }
-    g29_rows_["fw"]->set(st.g29_fw ? "tak" : std::string("nie - wgraj firmware ") + protocol::FW_LATEST_TEXT, st.g29_fw ? GOOD : BAD);
-    static const std::map<std::string, std::pair<std::string, RGB>> usb_rows = {
-        {"offline", {"-", MUTED}}, {"old_fw", {"-", MUTED}}, {"hidden", {"nie - ukryta, tryb bez G29", MUTED}},
+    if (st.g29_fw) g29_rows_["fw"]->set("tak", GOOD);
+    else if (st.g29_unsupported) g29_rows_["fw"]->set("nie - płytka bez natywnego USB", cfg.output.g29_on() ? BAD : MUTED);
+    else g29_rows_["fw"]->set(std::string("nie - wgraj firmware ") + protocol::FW_LATEST_TEXT, BAD);
+    const std::map<std::string, std::pair<std::string, RGB>> usb_rows = {
+        {"offline", {"-", MUTED}}, {"old_fw", {"-", MUTED}}, {"no_board", {"-", MUTED}}, {"hidden", {"nie - ukryta, tryb bez G29", MUTED}},
         {"attaching", {"podłączanie…", WARN}}, {"detecting", {"Windows ją wykrywa…", WARN}},
-        {"no_usb", {"nie - podłącz kabel do Native USB", BAD}}, {"ok", {"tak", GOOD}}};
+        {"no_usb", {st.g29_same_cable ? "nie - odłącz i podłącz kabel płytki" : "nie - podłącz kabel do Native USB", BAD}}, {"ok", {"tak", GOOD}}};
     const auto& usb = usb_rows.at(app_.g29_state(f.connected, st));
     g29_rows_["usb"]->set(usb.first, usb.second);
     if (!cfg.output.g29_on()) g29_rows_["feed"]->set("wyłączone - inny tryb wyjścia", MUTED);
@@ -334,8 +396,8 @@ void DiagPage::refresh(const Frame& f, bool visible) {
     rows_["port"]->set(stats.port.empty() ? "-" : stats.port);
     auto hello = app_.engine().hello();
     if (!hello) rows_["fw"]->set("-", TEXT);
-    else if (hello->outdated()) rows_["fw"]->set(std::format("{} {} (nowszy: {})", hello->name, hello->firmware(), protocol::FW_LATEST_TEXT), WARN);
-    else rows_["fw"]->set(hello->name + " " + hello->firmware(), TEXT);
+    else if (hello->outdated()) rows_["fw"]->set(std::format("{} · {} (nowszy: {})", hello->board(), hello->firmware(), protocol::FW_LATEST_TEXT), WARN);
+    else rows_["fw"]->set(std::format("{} · {} · {} przycisków", hello->board(), hello->firmware(), hello->num_buttons), TEXT);
 
     tiles_["fps"]->set(std::format("{:.0f} Hz", stats.frames_per_sec), stats.frames_per_sec > 50 ? GOOD : WARN);
     tiles_["lat"]->set(std::format("{:.1f} ms", stats.latency_ms), stats.latency_ms < 15 ? GOOD : WARN);

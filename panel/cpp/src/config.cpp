@@ -231,10 +231,15 @@ void set_config_path_override(const fs::path& path) { g_config_override = path; 
 
 fs::path config_path() {
     if (!g_config_override.empty()) return g_config_override;
-    // Obok programu, jesli da sie pisac, inaczej w %APPDATA%.
+    // Obok programu tylko w wersji przenosnej (portable.txt) albo gdy
+    // config.json juz tam lezy (starsze wersje panelu, katalog bin\).
+    // Zainstalowany program trzyma ustawienia w %APPDATA%\Kierownica -
+    // aktualizacja i deinstalacja ich nie ruszaja.
     fs::path dir = exe_dir();
+    std::error_code exists_ec;
+    bool local = fs::exists(dir / PORTABLE_MARKER, exists_ec) || fs::exists(dir / "config.json", exists_ec);
     fs::path probe = dir / ".write_test";
-    {
+    if (local) {
         std::ofstream f(probe, std::ios::binary);
         if (f && (f << "x") && f.flush()) {
             f.close();
@@ -368,6 +373,8 @@ void AppConfig::normalize() {
     g29.buttons = std::move(fixed_g29);
 
     ui.tab = clamp_int(ui.tab, 0, 31);
+
+    if (!link.board.empty() && !protocol::board_by_key(link.board)) link.board.clear();
 }
 
 // ------------------------------------------------------------ serializacja
@@ -402,6 +409,7 @@ std::string AppConfig::to_json() const {
 
     Value l = Value::object();
     l.set("port", link.port);
+    l.set("board", link.board);
     l.set("baudrate", link.baudrate);
     l.set("auto_connect", link.auto_connect);
     l.set("report_hz", link.report_hz);
@@ -488,6 +496,8 @@ std::string AppConfig::to_json() const {
     u.set("geometry", ui.geometry);
     u.set("zoomed", ui.zoomed);
     u.set("tab", ui.tab);
+    u.set("tray", ui.tray);
+    u.set("updates", ui.updates);
     root.set("ui", std::move(u));
 
     return json::dump(root);
@@ -650,6 +660,7 @@ AppConfig from_json(const Value& raw) {
     if (const Value* o = section(raw, "link")) {
         LinkConfig d;
         read_string(*o, "port", d.port);
+        read_string(*o, "board", d.board);
         read_int(*o, "baudrate", d.baudrate);
         read_bool(*o, "auto_connect", d.auto_connect);
         read_int(*o, "report_hz", d.report_hz);
@@ -763,6 +774,8 @@ AppConfig from_json(const Value& raw) {
         read_string(*o, "geometry", d.geometry);
         read_bool(*o, "zoomed", d.zoomed);
         read_int(*o, "tab", d.tab);
+        read_bool(*o, "tray", d.tray);
+        read_bool(*o, "updates", d.updates);
         cfg.ui = d;
     }
     cfg.normalize();

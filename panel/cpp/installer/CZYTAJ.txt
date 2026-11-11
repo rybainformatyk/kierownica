@@ -1,0 +1,77 @@
+PANEL KIEROWNICY
+================
+
+Program łączy domową kierownicę (Arduino / ESP32) z grami. Gry widzą ją jako
+kierownicę Logitech G29, wirtualny joystick vJoy albo pad Xbox 360.
+
+
+PIERWSZE KROKI
+--------------
+
+1. Uruchom panel. Ikona kierownicy pojawi się obok zegara.
+2. Podłącz płytkę kablem USB - panel sam ją znajdzie.
+3. Nowa płytka bez firmware: Diagnostyka -> pole "Płytka" -> wybierz swoją
+   -> "Wgraj firmware". Potrzebne jest Arduino IDE 2 (arduino.cc/en/software);
+   obsługę ESP32 itp. skrypt doinstaluje sam.
+4. Wybierz tryb wyjścia przyciskiem u góry okna i kliknij "Zapisz".
+
+
+OBSŁUGIWANE PŁYTKI
+------------------
+
+  Arduino Due               G29 (dwa kable: Programming Port + Native USB)
+  Arduino Leonardo / Micro  G29 (jeden kabel)
+  ESP32-S3                  G29 (jeden kabel, gniazdo USB, nie UART)
+  Arduino Mega 2560         vJoy, pad Xbox
+  Arduino Uno / Nano        vJoy, pad Xbox
+  ESP32 (DevKit)            vJoy, pad Xbox
+
+Podłączenie pinów każdej płytki jest opisane w pliku firmware piny.h
+(po pierwszym wgrywaniu: %LOCALAPPDATA%\Kierownica\firmware\kierownica).
+
+
+PRACA W TLE
+-----------
+
+Krzyżyk okna chowa panel do zasobnika - gry dalej widzą kierownicę.
+Panel zamkniesz całkiem z menu ikony (prawy przycisk -> Zakończ).
+Start razem z Windowsem włączysz w menu ikony albo w zakładce Diagnostyka.
+
+
+STEROWNIKI
+----------
+
+Instalator ma je w środku i instaluje te, których brakuje (jedno okno zgody
+administratora). vJoy jest od razu ustawiane tak, jak go używa panel:
+urządzenie 1, osie X Y Z Rx Ry Rz, 32 przyciski, POV, Force Feedback.
+
+  Tryb G29              nic nie trzeba instalować
+  Tryby z vJoy          vJoy 2.2.2 (https://github.com/BrunnerInnovation/vJoy)
+  Tryb pada Xbox        ViGEmBus 1.22 (https://github.com/nefarius/ViGEmBus)
+
+Wersja przenośna (ZIP) sterowników nie ma - pobierz je z tych stron.
+
+
+AKTUALIZACJE
+------------
+
+Panel sam sprawdza (chwilę po starcie), czy na GitHubie jest nowsza wersja.
+Diagnostyka -> Aktualizacje -> "Zaktualizuj do X.Y" pobiera ją, sprawdza
+sumę SHA-256, instaluje i uruchamia panel ponownie. Ustawienia zostają.
+Tę samą opcję ma menu ikony obok zegara.
+
+
+GDZIE SĄ USTAWIENIA
+-------------------
+
+  Zainstalowany program:   %APPDATA%\KierownicaPanel\config.json
+  Wersja przenośna (ZIP):  config.json obok Kierownica.exe (dzięki plikowi
+                           portable.txt)
+
+Odinstalowanie programu nie usuwa ustawień.
+
+
+LICENCJA
+--------
+
+GNU GPL v3 - treść w LICENSE.txt.

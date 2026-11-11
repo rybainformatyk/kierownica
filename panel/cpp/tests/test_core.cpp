@@ -19,6 +19,7 @@
 #include "link.h"
 #include "processing.h"
 #include "protocol.h"
+#include "updater.h"
 #include "winsys.h"
 
 using namespace wb;
@@ -598,6 +599,141 @@ static void test_golden(const fs::path& path) {
     (void)base_defaults;
 }
 
+// Plytki: nazwy z HELLO, co ktora umie, DTR i czas oczekiwania na porcie.
+static void test_boards() {
+    protocol::HelloInfo h;
+    h.fw_major = protocol::FW_LATEST_MAJOR;
+    h.fw_minor = protocol::FW_LATEST_MINOR;
+    h.name = "KIEROWNICA-UNO";
+    h.caps = protocol::CAP_FFB;
+    CHECK(h.board() == "Arduino Uno / Nano");
+    CHECK(h.g29_unsupported());
+    h.fw_major = 2;  // stary firmware bez G29 - to nie wina plytki
+    CHECK(!h.g29_unsupported());
+
+    h.fw_major = protocol::FW_LATEST_MAJOR;
+    h.name = "KIEROWNICA-LEONARDO";
+    h.caps = protocol::CAP_FFB | protocol::CAP_G29 | protocol::CAP_NATIVE_USB;
+    CHECK(h.g29_same_cable() && !h.can_hide_g29() && !h.g29_unsupported());
+    h.name = "KIEROWNICA-DUE";
+    h.caps = protocol::CAP_FFB | protocol::CAP_G29 | protocol::CAP_G29_HIDE;
+    CHECK(!h.g29_same_cable() && h.board() == "Arduino Due");
+    h.name = "Due";  // nazwa spoza listy zostaje jak jest
+    CHECK(h.board() == "Due");
+
+    CHECK(protocol::board_by_key("esp32s3") && std::string(protocol::board_by_key("esp32s3")->hello) == "KIEROWNICA-ESP32S3");
+    CHECK(protocol::board_by_key("xyz") == nullptr);
+    CHECK(std::string(protocol::board_by_hello("KIEROWNICA-UNO")->key) == "uno");
+    for (const auto& b : protocol::BOARDS) CHECK(protocol::board_by_key(b.key) == &b);
+
+    // DTR tylko dla natywnego USB - mostki USB-UART resetuja plytke
+    CHECK(wants_dtr(PortInfo{"COM5", "", "USB\\VID_2341&PID_8036&REV_0100&MI_00"}));
+    CHECK(wants_dtr(PortInfo{"COM6", "", "USB\\VID_046D&PID_C24F&MI_00"}));
+    CHECK(wants_dtr(PortInfo{"COM7", "", "USB\\VID_303A&PID_1001"}));
+    CHECK(!wants_dtr(PortInfo{"COM3", "", "USB\\VID_2341&PID_003D&REV_0001"}));
+    CHECK(!wants_dtr(PortInfo{"COM4", "", "USB\\VID_1A86&PID_7523&REV_0264"}));
+    CHECK(probe_timeout(PortInfo{"COM4", "", "USB\\VID_1A86&PID_7523"}) == PROBE_TIMEOUT_BRIDGE);
+    CHECK(probe_timeout(PortInfo{"COM4", "", "usb\\vid_10c4&pid_ea60"}) == PROBE_TIMEOUT_BRIDGE);
+    CHECK(probe_timeout(PortInfo{"COM3", "", "USB\\VID_2341&PID_003D"}) == PROBE_TIMEOUT);
+    CHECK(looks_like_arduino(PortInfo{"COM8", "Silicon Labs CP210x USB to UART Bridge (COM8)", ""}));
+
+    // nieznana plytka w config.json wraca do "automatycznie"
+    AppConfig cfg;
+    cfg.link.board = "esp32";
+    cfg.normalize();
+    CHECK(cfg.link.board == "esp32");
+    cfg.link.board = "atari";
+    cfg.normalize();
+    CHECK(cfg.link.board.empty());
+}
+
+// Aktualizacje: wersje, odpowiedz GitHuba, sumy kontrolne - bez sieci.
+static void test_updater() {
+    using namespace update;
+    CHECK(compare_versions("3.2", "3.2") == 0);
+    CHECK(compare_versions("v3.3", "3.2") > 0);
+    CHECK(compare_versions("3.10", "3.9") > 0);   // liczbowo, nie alfabetycznie
+    CHECK(compare_versions("3.2", "3.2.1") < 0);
+    CHECK(compare_versions("3.2.0", "3.2") == 0);
+    CHECK(compare_versions("4.0-beta", "3.9") > 0);
+
+    const char* api = R"({"tag_name": "v3.3", "name": "Kierownica 3.3", "html_url": "https://github.com/rybainformatyk/kierownica/releases/tag/v3.3",
+        "body": "## Nowe\r\n* zasobnik", "assets": [
+        {"name": "Kierownica-3.3-instalator.exe", "size": 17000000, "browser_download_url": "https://github.com/rybainformatyk/kierownica/releases/download/v3.3/Kierownica-3.3-instalator.exe"},
+        {"name": "Kierownica.exe", "size": 2000000, "browser_download_url": "https://github.com/rybainformatyk/kierownica/releases/download/v3.3/Kierownica.exe"},
+        {"name": "SHA256SUMS.txt", "size": 300, "browser_download_url": "https://github.com/rybainformatyk/kierownica/releases/download/v3.3/SHA256SUMS.txt"}]})";
+    std::string error;
+    auto rel = parse_release(api, error);
+    CHECK(rel.has_value());
+    if (rel) {
+        CHECK(rel->version == "3.3" && rel->tag == "v3.3" && rel->assets.size() == 3);
+        CHECK(rel->installer() && rel->installer()->name == "Kierownica-3.3-instalator.exe" && rel->installer()->size == 17000000);
+        CHECK(rel->asset(EXE_ASSET) && rel->asset(SUMS_ASSET));
+        CHECK(rel->notes.find("zasobnik") != std::string::npos);
+    }
+    CHECK(!parse_release("{\"message\": \"Not Found\"}", error));
+    CHECK(!parse_release("to nie json", error));
+
+    auto sums = parse_sums("89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A  Kierownica.exe\r\n"
+                           "zle  linia\n"
+                           "ef569a3105cd301b89580f18f60c66b339e95296acf2c0dfcaf4b4bbf8ab68fe *Kierownica-3.3-instalator.exe\n");
+    CHECK(sums.size() == 2);
+    CHECK(sums["Kierownica.exe"] == "89220a7865076b342892f98865f3499fb7c4cfd673159e89d352c360fd014c6a");
+    CHECK(sums.contains("Kierownica-3.3-instalator.exe"));
+
+    CHECK(trusted_url("https://github.com/rybainformatyk/kierownica/releases/download/v3.3/Kierownica.exe"));
+    CHECK(!trusted_url("http://github.com/rybainformatyk/kierownica/releases/download/v3.3/Kierownica.exe"));
+    CHECK(!trusted_url("https://github.com/ktos/inny/releases/download/v3.3/Kierownica.exe"));
+    CHECK(!trusted_url("https://evil.example/rybainformatyk/kierownica/releases/download/x"));
+
+    TempDir dir;
+    write_text(dir.path / "abc.txt", "abc");
+    CHECK(sha256_file(dir.path / "abc.txt") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(sha256_file(dir.path / "brak.txt").empty());
+    CHECK(install_kind(dir.path) == InstallKind::Portable);
+    write_text(dir.path / "unins000.exe", "x");
+    CHECK(install_kind(dir.path) == InstallKind::Installer);
+
+    // ustawienie sprawdzania przy starcie przetrwa zapis i odczyt
+    AppConfig cfg;
+    cfg.ui.updates = false;
+    cfg.ui.tray = false;
+    fs::path path = dir.path / "config.json";
+    cfg.save(path);
+    AppConfig back = AppConfig::load(path);
+    CHECK(!back.ui.updates && !back.ui.tray);
+}
+
+// Prawdziwe zapytanie do GitHuba - tylko z KIEROWNICA_LIVE=1 (zwykle testy nie
+// potrzebuja sieci). Udajemy stara wersje, wiec najnowsze wydanie jest "nowsze".
+static void test_updater_live() {
+    wchar_t flag[8] = {};
+    if (!GetEnvironmentVariableW(L"KIEROWNICA_LIVE", flag, 8) || flag[0] != L'1') return;
+    update::Updater u("0.1", update::InstallKind::Portable);
+    u.check(true);
+    update::State s;
+    for (int i = 0; i < 300; ++i) {  // do 30 s
+        s = u.state();
+        if (s.phase != update::State::Phase::Checking) break;
+        Sleep(100);
+    }
+    std::printf("live: faza %d, %s, wersja %s, mozna instalowac: %s\n", static_cast<int>(s.phase), s.message.c_str(),
+                s.release ? s.release->version.c_str() : "-", s.can_install ? "tak" : "nie");
+    CHECK(s.phase == update::State::Phase::Available);
+    CHECK(s.release && !s.release->assets.empty());
+
+    // pobieranie z przekierowaniem github.com -> serwer plikow; suma z `gh release download`
+    TempDir dir;
+    std::string error;
+    uint64_t seen = 0;
+    bool ok = update::download_file("https://github.com/rybainformatyk/kierownica/releases/download/v3.1/Kierownica.exe",
+                                    dir.path / "Kierownica.exe", [&](uint64_t done, uint64_t) { seen = done; return true; }, error);
+    std::printf("live: pobrano %llu B %s\n", static_cast<unsigned long long>(seen), error.c_str());
+    CHECK(ok);
+    CHECK(update::sha256_file(dir.path / "Kierownica.exe") == "ebd019abf2c0d016002188731233af6fe5579d71240f28bacef4b665cfa325f9");
+    CHECK(!fs::exists(dir.path / "Kierownica.exe.part"));
+}
+
 int wmain(int argc, wchar_t** argv) {
     SetConsoleOutputCP(CP_UTF8);
     test_protocol();
@@ -607,6 +743,9 @@ int wmain(int argc, wchar_t** argv) {
     test_ffb();
     test_engine();
     test_winsys();
+    test_boards();
+    test_updater();
+    test_updater_live();
     if (argc > 1) test_golden(argv[1]);
     std::printf("%d sprawdzen, %d bledow\n", g_checks, g_failed);
     return g_failed ? 1 : 0;

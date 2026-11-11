@@ -53,9 +53,14 @@ struct EngineStatus {
     std::string firmware;
     std::string device_name;
     bool board_has_ffb = false;
-    // Tryb G29: czy firmware to umie, czy Windows widzi Native USB i czy
-    // raporty z aplikacji docieraja do plytki.
+    // Tryb G29: czy firmware to umie, czy Windows widzi G29 i czy raporty
+    // z aplikacji docieraja do plytki.
     bool g29_fw = false;
+    // Plytka w ogole nie umie G29 (Uno, Mega, ESP32) - nowy firmware nie pomoze.
+    bool g29_unsupported = false;
+    // G29 na tym samym gniezdzie USB co lacze (Leonardo, ESP32-S3); Due ma
+    // osobny port Native USB.
+    bool g29_same_cable = false;
     bool g29_usb = false;
     bool g29_fed = false;
     uint64_t g29_out_packets = 0;

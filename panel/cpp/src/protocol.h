@@ -25,9 +25,33 @@ inline constexpr int PROTO_VERSION = 1;
 
 // Najnowszy firmware z firmware/kierownica. Starszy dziala dalej, ale bez
 // nowszych funkcji - panel podpowiada wtedy, zeby go wgrac.
-inline constexpr int FW_LATEST_MAJOR = 2;
-inline constexpr int FW_LATEST_MINOR = 2;
-inline constexpr const char* FW_LATEST_TEXT = "2.2";
+inline constexpr int FW_LATEST_MAJOR = 3;
+inline constexpr int FW_LATEST_MINOR = 0;
+inline constexpr const char* FW_LATEST_TEXT = "3.0";
+
+// Plytki, na ktore da sie wgrac firmware z panelu. key to nazwa dla
+// wgraj_firmware.ps1 (-Plytka), hello - nazwa, ktora plytka podaje w HELLO.
+struct BoardInfo {
+    const char* key;
+    const char* label;
+    const char* hello;
+};
+inline constexpr std::array<BoardInfo, 8> BOARDS = {{
+    {"due", "Arduino Due", "KIEROWNICA-DUE"},
+    {"mega", "Arduino Mega 2560", "KIEROWNICA-MEGA"},
+    {"uno", "Arduino Uno", "KIEROWNICA-UNO"},
+    {"nano", "Arduino Nano", "KIEROWNICA-UNO"},  // ten sam firmware co Uno
+    {"leonardo", "Arduino Leonardo / Pro Micro", "KIEROWNICA-LEONARDO"},
+    {"micro", "Arduino Micro", "KIEROWNICA-LEONARDO"},
+    {"esp32", "ESP32", "KIEROWNICA-ESP32"},
+    {"esp32s3", "ESP32-S3", "KIEROWNICA-ESP32S3"},
+}};
+
+const BoardInfo* board_by_key(const std::string& key);
+// Pierwsza plytka z ta nazwa w HELLO; nullptr dla nieznanej nazwy.
+const BoardInfo* board_by_hello(const std::string& hello_name);
+// Nazwa plytki do wyswietlenia ("Arduino Uno / Nano"); nieznana - jak w HELLO.
+std::string board_label(const std::string& hello_name);
 
 inline constexpr uint8_t SYNC1 = 0xAA;
 inline constexpr uint8_t SYNC2 = 0x55;
@@ -144,10 +168,16 @@ struct HelloInfo {
     std::string name;
 
     std::string firmware() const;
+    std::string board() const { return board_label(name); }
     bool has_ffb() const { return caps & CAP_FFB; }
     bool native_usb() const { return caps & CAP_NATIVE_USB; }
     bool has_g29() const { return caps & CAP_G29; }
     bool can_hide_g29() const { return caps & CAP_G29_HIDE; }
+    // Aktualny firmware bez G29 - plytka nie ma natywnego USB (Uno, Mega,
+    // ESP32). Nowszy firmware tego nie zmieni.
+    bool g29_unsupported() const { return !has_g29() && !outdated(); }
+    // G29 i lacze z panelem ida tym samym gniazdem USB (Leonardo, ESP32-S3).
+    bool g29_same_cable() const { return has_g29() && native_usb(); }
     // Czy plytka ma starszy firmware niz ten z repozytorium.
     bool outdated() const {
         return std::pair<int, int>(fw_major, fw_minor) <

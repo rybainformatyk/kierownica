@@ -28,6 +28,9 @@ enum class LinkState { Disconnected, Scanning, Connected, Error };
 const char* link_state_label(LinkState state);
 
 inline constexpr double PROBE_TIMEOUT = 1.2;  // oczekiwanie na HELLO przy sprawdzaniu portu
+// Klony z CH340 / CP210x / FTDI i ESP32 potrafia zresetowac sie przy otwarciu
+// portu - bootloader trzyma je wtedy do ok. 2 s, zanim ruszy firmware.
+inline constexpr double PROBE_TIMEOUT_BRIDGE = 2.5;
 inline constexpr double STALE_TIMEOUT = 1.5;  // po tylu sekundach bez ramki lacze jest zerwane
 
 struct LinkStats {
@@ -56,12 +59,20 @@ std::vector<PortInfo> list_ports();
 // Heurystyka pierwszenstwa przy skanowaniu - nie wyklucza zadnego portu.
 bool looks_like_arduino(const PortInfo& info);
 
+// Port COM natywnego USB plytki (Leonardo, ESP32-S3, Native USB Due) - czesc
+// urzadzenia zlozonego (&MI_ w identyfikatorze). Plytka wysyla dane dopiero,
+// gdy host podniesie DTR. Mostki USB-UART (Uno, Due Programming Port, ESP32)
+// DTR resetuje, wiec tam zostaje opuszczone.
+bool wants_dtr(const PortInfo& info);
+// Ile czekac na HELLO z tego portu.
+double probe_timeout(const PortInfo& info);
+
 // Port COM otwarty w trybie overlapped: odczyt i zapis z roznych watkow.
 class SerialPort {
 public:
     ~SerialPort();
     // Pusty string = sukces, inaczej opis bledu.
-    std::string open(const std::string& device, int baudrate);
+    std::string open(const std::string& device, int baudrate, bool dtr = false);
     void close();
     // Bajty odebrane; 0 po 50 ms ciszy; -1 po bledzie.
     int read(uint8_t* buffer, int size);
@@ -119,8 +130,8 @@ protected:
 private:
     void run();
     void do_connect();
-    std::unique_ptr<SerialPort> open_port(const std::string& device);
-    std::shared_ptr<const protocol::HelloInfo> probe(SerialPort& ser);
+    std::unique_ptr<SerialPort> open_port(const PortInfo& info);
+    std::shared_ptr<const protocol::HelloInfo> probe(SerialPort& ser, double timeout);
     void close_port();
     void pump();
     void dispatch(uint8_t type, const protocol::Bytes& payload, double now);

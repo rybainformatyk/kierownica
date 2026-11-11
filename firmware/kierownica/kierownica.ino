@@ -1,108 +1,71 @@
 /* =============================================================================
- *  KIEROWNICA  -  firmware dla Arduino Due
- *  Wersja 2.2  -  lacze szeregowe z aplikacja + kierownica G29 na Native USB
+ *  KIEROWNICA  -  firmware dla Arduino Due, Mega, Uno, Nano, Leonardo, Micro,
+ *                 ESP32 i ESP32-S3
+ *  Wersja 3.0  -  lacze szeregowe z aplikacja + kierownica G29 na USB
  * =============================================================================
  *
- *  NOWE W 2.2 - G29 ZNIKA, GDY NIE JEST UZYWANA
+ *  NOWE W 3.0 - WIELE PLYTEK
+ *    Ten sam szkic kompiluje sie na kilku plytkach. Piny i mozliwosci kazdej
+ *    plytki sa w piny.h. Aplikacja rozpoznaje plytke po nazwie w HELLO
+ *    (KIEROWNICA-DUE, -MEGA, -UNO, -LEONARDO, -ESP32, -ESP32S3), a o tym,
+ *    co plytka umie, mowia bity CAP_*. Odczyty ADC zawsze trafiaja do
+ *    aplikacji jako 0..4095 (10 bitow jest mnozone x4).
+ *
+ *  2.2 - G29 ZNIKA, GDY NIE JEST UZYWANA (tylko Due)
  *    Komenda CMD_G29_USB odlacza port Native USB od komputera (i podlacza go
  *    z powrotem). Aplikacja odlacza G29 w trybach bez G29 (vJoy, pad), zeby
- *    gry nie widzialy dwoch kierownic naraz. Po starcie plytki G29 jest
- *    podlaczona, jak w 2.1. Przy laczu przez Native USB (WHEEL_USE_NATIVE_USB)
- *    komenda jest wylaczona - odlaczenie zerwaloby lacze z aplikacja.
+ *    gry nie widzialy dwoch kierownic naraz.
  *
- *  NOWE W 2.1 - KIEROWNICA G29
- *    Port Native USB przedstawia sie Windowsowi jako Logitech G29 (VID 046D,
- *    PID C24F, oryginalny uklad raportu) - patrz g29_usb.h. Gry, ktore
- *    przyjmuja tylko kierownice ze swojej listy (Forza), widza wtedy G29.
- *    Kalibracje i mapowanie nadal robi aplikacja: liczy gotowy raport G29 i
- *    przysyla go komenda CMD_G29, a plytka tylko wypycha go przez USB.
- *    Podlacz OBA kable: Programming Port (lacze z aplikacja) i Native USB
- *    (kierownica dla gier). Gdy aplikacja zamilknie na 250 ms, G29 wraca do
- *    pozycji spoczynkowej - auto nie zostanie z wcisnietym gazem.
+ *  2.1 - KIEROWNICA G29
+ *    Port USB przedstawia sie Windowsowi jako Logitech G29 (VID 046D,
+ *    PID C24F, oryginalny uklad raportu) - patrz g29_raport.h. Kalibracje
+ *    i mapowanie robi aplikacja: liczy gotowy raport G29 i przysyla go
+ *    komenda CMD_G29, a plytka tylko wypycha go przez USB. Gdy aplikacja
+ *    zamilknie na 250 ms, G29 wraca do pozycji spoczynkowej - auto nie
+ *    zostanie z wcisnietym gazem.
+ *      Due:             Programming Port = lacze, Native USB = G29 (2 kable)
+ *      Leonardo, Micro: jedno gniazdo = lacze + G29
+ *      ESP32-S3:        gniazdo USB (OTG) = lacze + G29
+ *      Mega, Uno, ESP32: bez G29 - tryby vJoy i pad Xbox
  *
- *  Plytka NIE udaje juz joysticka. Wysyla surowe odczyty ramkami binarnymi
- *  do aplikacji "panel" na PC, a ta tworzy wirtualne urzadzenie (vJoy),
- *  ktore gry widza jako kierownice.
+ *  Plytka NIE udaje joysticka sama z siebie. Wysyla surowe odczyty ramkami
+ *  binarnymi do aplikacji "panel" na PC, a ta tworzy urzadzenie, ktore gry
+ *  widza jako kierownice (G29, vJoy albo pad Xbox 360).
  *
- *  Co zostalo naprawione wzgledem wersji 1 (HID, bez aplikacji na PC):
- *    * Serial 9600 + dlugi debug co 10 ms zapychal bufor TX i BLOKOWAL petle
- *      (to bylo zacinanie sie) -> teraz 250000 baud + ramki 33 B + brak
- *      zapisu gdy bufor pelny.
- *    * delay(10) -> nieblokujacy harmonogram na micros().
- *    * map() bez constrain() wychodzil poza zakres osi -> skalowanie i
- *      kalibracja przeniesione do aplikacji na PC (zmiana bez reflashowania).
- *    * Encoder.h -> wlasny dekoder kwadraturowy x4 na przerwaniach (bez
- *      zaleznosci, obsluga bledow kwadratury).
- *    * ADC 10-bit -> 12-bit (4096 krokow) + filtr IIR + odrzucenie pierwszej
- *      probki po przelaczeniu kanalu.
- *    * brak debounce -> debounce wertykalnym licznikiem na wszystkich 32
- *      przyciskach jednoczesnie.
- *    * parser komend "send 123" rozjezdzal sie przy bledzie -> ramki z CRC8
- *      i automatyczna resynchronizacja.
- *    * dodany kanal Force Feedback z watchdogiem (wylaczony po starcie).
+ *  Najwazniejsze zasady (z wersji 1):
+ *    * nigdy nie blokujemy petli na write() - ramka bez miejsca jest pomijana,
+ *    * nieblokujacy harmonogram na micros(), bez delay(),
+ *    * dekoder kwadraturowy x4 na przerwaniach z wykrywaniem bledow,
+ *    * filtr IIR na osiach, debounce wertykalnym licznikiem na 32 przyciskach,
+ *    * ramki z CRC8 i automatyczna resynchronizacja,
+ *    * kanal Force Feedback z watchdogiem (wylaczony po starcie).
  *
  *  POLACZENIE
- *    Domyslnie uzywany jest PROGRAMMING PORT (gniazdo przy zlaczu zasilania),
- *    250000 baud - ta wartosc dzieli sie calkowicie zarowno przez zegar
- *    SAM3X (84 MHz / 16 / 21) jak i ATmega16U2 (16 MHz / 8 / 8), wiec nie ma
- *    bledu zegara. Zapas pasma przy 333 Hz to ponad 2x.
- *    Aby uzyc NATIVE USB PORT (szybszy, mniejsze opoznienie) ustaw nizej
- *    WHEEL_USE_NATIVE_USB na 1 i wybierz w aplikacji ten drugi port COM.
+ *    250000 baud - ta wartosc dzieli sie calkowicie przez zegary SAM3X
+ *    (84 MHz / 16 / 21), ATmega16U2 i ATmega328P (16 MHz / 8 / 8), wiec nie
+ *    ma bledu zegara. Przy natywnym USB predkosc nie ma znaczenia.
  *
- *  PINY (zgodne z Twoim ukladem)
- *    2, 3        - enkoder kwadraturowy A / B
- *    A0..A5      - potencjometry: gaz, hamulec, sprzeglo, aux1, aux2, aux3
- *    4           - przycisk nr 0
- *    22..52      - przyciski nr 1..31
- *    5, 6, 7     - opcjonalny mostek H do FFB (EN, RPWM, LPWM) - BTS7960/IBT-2
+ *  PINY - patrz piny.h
  * =============================================================================
  */
 
+#include "piny.h"
+
 // ---------------------------------------------------------------- konfiguracja
 
-// #ifndef pozwala nadpisac ustawienie z linii polecen kompilatora (-D...)
-#ifndef WHEEL_USE_NATIVE_USB
-#define WHEEL_USE_NATIVE_USB 0      // 0 = Programming Port, 1 = Native USB Port
-#endif
-#define WHEEL_BAUD           250000 // ignorowane przy Native USB
-#ifndef WHEEL_G29_USB
-#define WHEEL_G29_USB        1      // 1 = Native USB udaje kierownice Logitech G29
-#endif
+#define WHEEL_BAUD           250000 // ignorowane przy natywnym USB
 #define G29_TIMEOUT_MS       250    // brak raportu z aplikacji -> pozycja spoczynkowa
-
-#define ENC_A_PIN            2
-#define ENC_B_PIN            3
-
-#define BUTTON0_PIN          4      // pojedynczy przycisk -> bit 0
-#define BUTTON_BANK_FIRST    22     // 22..52 -> bity 1..31
-#define BUTTON_BANK_LAST     52
-
-#define FFB_EN_PIN           5
-#define FFB_RPWM_PIN         6
-#define FFB_LPWM_PIN         7
-#define FFB_HARDWARE_PRESENT 1      // 0 = nie ruszaj tych pinow wcale
 
 #define TICK_HZ              1000   // czestotliwosc filtrow i debounce
 #define DEFAULT_REPORT_HZ    333    // czestotliwosc ramek stanu
 #define MIN_REPORT_HZ        50
 #define MAX_REPORT_HZ        500
 
-#define ADC_FILTER_SHIFT     3      // filtr IIR: alfa = 1/8
-
-// --------------------------------------------------------------------- wybor portu
-
-#if WHEEL_USE_NATIVE_USB
-  #define WPORT SerialUSB
-#else
-  #define WPORT Serial
-#endif
-
 // --------------------------------------------------------------------- protokol
 
 #define PROTO_VERSION  1
-#define FW_MAJOR       2
-#define FW_MINOR       2
-#define DEVICE_NAME    "KIEROWNICA-DUE"
+#define FW_MAJOR       3
+#define FW_MINOR       0
 
 #define SYNC1 0xAA
 #define SYNC2 0x55
@@ -125,37 +88,46 @@
 #define CMD_FFB_CONFIG  0x16
 #define CMD_RESET       0x17
 #define CMD_G29         0x18     // gotowy 12-bajtowy raport G29 z aplikacji
-#define CMD_G29_USB     0x19     // 1 = podlacz Native USB (G29), 0 = odlacz
+#define CMD_G29_USB     0x19     // 1 = podlacz G29 do komputera, 0 = odlacz
 
 #define CAP_FFB        0x01
-#define CAP_NATIVE_USB 0x02
+#define CAP_NATIVE_USB 0x02     // lacze z aplikacja idzie natywnym USB plytki
 #define CAP_G29        0x04
 #define CAP_G29_HIDE   0x08     // umie odlaczyc G29 komenda CMD_G29_USB
 
 #define NUM_AXES    6
-#define NUM_BUTTONS 32
+#define MAX_BUTTONS 32
 
 #define MAX_PAYLOAD 64
 
+// --------------------------------------------------------------------- port
+
+#if WPORT_IS_TINYUSB
+  #include "USB.h"
+  #include "USBCDC.h"
+  static USBCDC wheelCdc(0);
+#endif
+
 // ----------------------------------------------------------------------- G29
 
-#if WHEEL_G29_USB
+#if G29_PLUGGABLE
   #include "g29_usb.h"
+#elif G29_TINYUSB
+  #include "g29_tinyusb.h"
+#endif
+
+#if HAS_G29
   // Obiekt globalny: konstruktor rejestruje interfejs USB, zanim rdzen
-  // podlaczy port Native USB do hosta.
+  // podlaczy port do hosta.
   static G29Usb g29Usb;
   static uint32_t g29LastCmdMs = 0;
   static bool     g29Fed       = false;   // aplikacja przysyla raporty
-  // Odlaczanie G29 tylko wtedy, gdy lacze z aplikacja idzie Programming Portem
-  #define G29_CAN_HIDE (!WHEEL_USE_NATIVE_USB)
-#else
-  #define G29_CAN_HIDE 0
 #endif
 
 // ---------------------------------------------------------------------- CRC8
 
-// CRC-8/ATM, polinom 0x07, init 0x00 - tablica w flashu
-static const uint8_t CRC8_TABLE[256] = {
+// CRC-8/ATM, polinom 0x07, init 0x00 - tablica we flashu
+static const uint8_t CRC8_TABLE[256] PROGMEM = {
   0x00,0x07,0x0E,0x09,0x1C,0x1B,0x12,0x15,0x38,0x3F,0x36,0x31,0x24,0x23,0x2A,0x2D,
   0x70,0x77,0x7E,0x79,0x6C,0x6B,0x62,0x65,0x48,0x4F,0x46,0x41,0x54,0x53,0x5A,0x5D,
   0xE0,0xE7,0xEE,0xE9,0xFC,0xFB,0xF2,0xF5,0xD8,0xDF,0xD6,0xD1,0xC4,0xC3,0xCA,0xCD,
@@ -174,17 +146,28 @@ static const uint8_t CRC8_TABLE[256] = {
   0xDE,0xD9,0xD0,0xD7,0xC2,0xC5,0xCC,0xCB,0xE6,0xE1,0xE8,0xEF,0xFA,0xFD,0xF4,0xF3
 };
 
+static inline uint8_t crcStep(uint8_t c, uint8_t b) { return pgm_read_byte(&CRC8_TABLE[c ^ b]); }
+
 static inline uint8_t crc8(const uint8_t *data, uint8_t len) {
   uint8_t c = 0x00;
-  while (len--) c = CRC8_TABLE[c ^ *data++];
+  while (len--) c = crcStep(c, *data++);
   return c;
 }
 
 // ------------------------------------------------------------------- enkoder
 
+// W ESP32 kod przerwania i jego dane musza lezec w RAM.
+#if defined(ARDUINO_ARCH_ESP32)
+  #define ISR_CODE IRAM_ATTR
+  #define ISR_DATA DRAM_ATTR
+#else
+  #define ISR_CODE
+  #define ISR_DATA
+#endif
+
 // Dekoder kwadraturowy x4. Indeks = (poprzedni_stan << 2) | nowy_stan,
 // gdzie stan = (A << 1) | B. Zera na przekatnej, 0 przy przeskoku o 2 (blad).
-static const int8_t QUAD_TABLE[16] = {
+static const int8_t ISR_DATA QUAD_TABLE[16] = {
    0, +1, -1,  0,
   -1,  0,  0, +1,
   +1,  0,  0, -1,
@@ -195,33 +178,81 @@ volatile int32_t  encCount    = 0;
 volatile uint32_t encErrors   = 0;
 volatile uint8_t  encState    = 0;
 
-static Pio      *encAPort, *encBPort;
-static uint32_t  encAMask,  encBMask;
-
 static int32_t   encOffset = 0;   // pozycja zera (ustawiana przez CMD_CENTER)
 
-static inline uint8_t encRead() {
-  uint8_t s = 0;
-  if (encAPort->PIO_PDSR & encAMask) s |= 0x02;
-  if (encBPort->PIO_PDSR & encBMask) s |= 0x01;
-  return s;
+// Szybki odczyt pinow enkodera prosto z rejestrow - digitalRead() w
+// przerwaniu bylby za wolny przy szybkim kreceniu kierownica.
+#if defined(ARDUINO_ARCH_SAM)
+  static Pio      *encAPort, *encBPort;
+  static uint32_t  encAMask,  encBMask;
+  static void encPinsInit() {
+    encAPort = g_APinDescription[ENC_A_PIN].pPort;
+    encAMask = g_APinDescription[ENC_A_PIN].ulPin;
+    encBPort = g_APinDescription[ENC_B_PIN].pPort;
+    encBMask = g_APinDescription[ENC_B_PIN].ulPin;
+  }
+  static inline bool encA() { return encAPort->PIO_PDSR & encAMask; }
+  static inline bool encB() { return encBPort->PIO_PDSR & encBMask; }
+#elif defined(ARDUINO_ARCH_AVR)
+  static volatile uint8_t *encAPort, *encBPort;
+  static uint8_t encAMask, encBMask;
+  static void encPinsInit() {
+    encAPort = portInputRegister(digitalPinToPort(ENC_A_PIN));
+    encAMask = digitalPinToBitMask(ENC_A_PIN);
+    encBPort = portInputRegister(digitalPinToPort(ENC_B_PIN));
+    encBMask = digitalPinToBitMask(ENC_B_PIN);
+  }
+  static inline bool encA() { return *encAPort & encAMask; }
+  static inline bool encB() { return *encBPort & encBMask; }
+#elif defined(ARDUINO_ARCH_ESP32)
+  #include "soc/gpio_reg.h"
+  static_assert(ENC_A_PIN < 32 && ENC_B_PIN < 32, "enkoder na GPIO 0..31");
+  static void encPinsInit() {}
+  static inline bool ISR_CODE encA() { return REG_READ(GPIO_IN_REG) & (1UL << ENC_A_PIN); }
+  static inline bool ISR_CODE encB() { return REG_READ(GPIO_IN_REG) & (1UL << ENC_B_PIN); }
+#endif
+
+static inline uint8_t ISR_CODE encRead() {
+  return (encA() ? 0x02 : 0) | (encB() ? 0x01 : 0);
 }
 
-static void encISR() {
+static void ISR_CODE encISR() {
   uint8_t cur  = encRead();
   uint8_t prev = encState;
   encState = cur;
   int8_t d = QUAD_TABLE[(prev << 2) | cur];
   if (d) {
-    encCount += d;
+    encCount = encCount + d;
   } else if (prev != cur) {
-    encErrors++;              // przeskok o dwa kroki - zgubione przerwanie
+    encErrors = encErrors + 1;  // przeskok o dwa kroki - zgubione przerwanie
   }
+}
+
+// AVR czyta 32 bity w kilku instrukcjach - przerwanie w srodku daloby smieci.
+static inline int32_t encNow() {
+#if defined(ARDUINO_ARCH_AVR)
+  noInterrupts();
+  int32_t v = encCount;
+  interrupts();
+  return v;
+#else
+  return encCount;
+#endif
+}
+
+static inline bool encTakeErrors() {
+  noInterrupts();
+  bool any = encErrors != 0;
+  encErrors = 0;
+  interrupts();
+  return any;
 }
 
 // ------------------------------------------------------------------ przyciski
 
-static const uint8_t BANK_COUNT = BUTTON_BANK_LAST - BUTTON_BANK_FIRST + 1; // 31
+static const uint8_t BUTTON_PINS[] = { BUTTON_PIN_LIST };
+#define BUTTON_COUNT ((uint8_t)sizeof(BUTTON_PINS))
+static_assert(sizeof(BUTTON_PINS) <= MAX_BUTTONS, "najwyzej 32 przyciski");
 
 static uint32_t btnStable = 0;    // stan po debounce (1 = wcisniety)
 static uint32_t btnCnt0   = 0;
@@ -229,9 +260,8 @@ static uint32_t btnCnt1   = 0;
 
 static inline uint32_t btnSampleRaw() {
   uint32_t s = 0;
-  if (digitalRead(BUTTON0_PIN) == LOW) s |= 1UL;
-  for (uint8_t i = 0; i < BANK_COUNT; i++) {
-    if (digitalRead(BUTTON_BANK_FIRST + i) == LOW) s |= (1UL << (i + 1));
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+    if (digitalRead(BUTTON_PINS[i]) == LOW) s |= (1UL << i);
   }
   return s;
 }
@@ -248,24 +278,38 @@ static inline void btnDebounce(uint32_t sample) {
 
 // ---------------------------------------------------------------- analogowe
 
-static const uint8_t ADC_PINS[NUM_AXES] = { A0, A1, A2, A3, A4, A5 };
+static const uint8_t AXIS_PINS[NUM_AXES] = { AXIS_PIN_LIST };
 static int32_t  adcAcc[NUM_AXES];        // akumulator filtru IIR
 static uint16_t adcValue[NUM_AXES];      // wynik 0..4095
+static uint8_t  adcNext = 0;             // nastepna os do odczytu
+
+// Odczyt 0..4095 niezaleznie od rozdzielczosci ADC plytki.
+static uint16_t adcRead(uint8_t pin) {
+#if !defined(ARDUINO_ARCH_ESP32)
+  analogRead(pin);                                  // odrzucamy probke po
+#endif                                              // przelaczeniu kanalu
+  return (uint16_t)analogRead(pin) << (12 - ADC_BITS);
+}
 
 static void adcInit() {
-  analogReadResolution(12);
+#if defined(ARDUINO_ARCH_SAM) || defined(ARDUINO_ARCH_ESP32)
+  analogReadResolution(ADC_BITS);
+#endif
   for (uint8_t i = 0; i < NUM_AXES; i++) {
-    analogRead(ADC_PINS[i]);                       // rozgrzanie kanalu
-    uint16_t v = analogRead(ADC_PINS[i]);
+    uint16_t v = (AXIS_PINS[i] == PIN_NONE) ? 0 : adcRead(AXIS_PINS[i]);
     adcAcc[i]   = (int32_t)v << ADC_FILTER_SHIFT;
     adcValue[i] = v;
   }
 }
 
+// Kilka osi na tik - w AVR analogRead trwa ok. 110 us, wiec wszystkie
+// szesc (z probka odrzucana) zajeloby ponad milisekunde.
 static void adcUpdate() {
-  for (uint8_t i = 0; i < NUM_AXES; i++) {
-    analogRead(ADC_PINS[i]);                       // odrzucamy probke po
-    int32_t raw = analogRead(ADC_PINS[i]);         // przelaczeniu kanalu
+  for (uint8_t n = 0; n < AXES_PER_TICK; n++) {
+    uint8_t i = adcNext;
+    adcNext = (uint8_t)((adcNext + 1) % NUM_AXES);
+    if (AXIS_PINS[i] == PIN_NONE) continue;
+    int32_t raw = adcRead(AXIS_PINS[i]);
     adcAcc[i]  += raw - (adcAcc[i] >> ADC_FILTER_SHIFT);
     adcValue[i] = (uint16_t)(adcAcc[i] >> ADC_FILTER_SHIFT);
   }
@@ -366,15 +410,20 @@ static inline void putU32(uint8_t *b, uint8_t  &i, uint32_t v) {
 }
 
 // Czy mozna pisac bez blokowania petli.
-// UART: patrzymy na wolne miejsce w buforze TX.
-// Native USB: Serial_::availableForWrite() zwraca stala (bezuzyteczne), ale
-// Serial_::write() nic nie robi gdy host nie otworzyl portu - wiec sprawdzamy
-// operator bool(), ktory testuje lineState.
 static inline bool txReady(uint8_t need) {
-#if WHEEL_USE_NATIVE_USB
+#if LINK_NATIVE_USB && defined(ARDUINO_ARCH_SAM)
+  // SerialUSB Due: availableForWrite() zwraca stala, ale write() nic nie
+  // robi, gdy host nie otworzyl portu - operator bool() sprawdza lineState.
   (void)need;
   return (bool)WPORT;
+#elif LINK_NATIVE_USB && defined(ARDUINO_ARCH_AVR)
+  // Leonardo: operator bool() czeka 10 ms - nie wolno go wolac w petli.
+  // Bez otwartego portu write() i tak nic nie wysyla.
+  return WPORT.availableForWrite() >= (int)need;
+#elif LINK_NATIVE_USB
+  return (bool)WPORT && WPORT.availableForWrite() >= (int)need;
 #else
+  // UART: wolne miejsce w buforze TX
   return WPORT.availableForWrite() >= (int)need;
 #endif
 }
@@ -386,7 +435,7 @@ static bool sendFrame(uint8_t type, const uint8_t *payload, uint8_t len) {
 
   uint8_t head[2] = { type, len };
   uint8_t c = crc8(head, 2);
-  for (uint8_t i = 0; i < len; i++) c = CRC8_TABLE[c ^ payload[i]];
+  for (uint8_t i = 0; i < len; i++) c = crcStep(c, payload[i]);
 
   uint8_t frame[MAX_PAYLOAD + 5];
   uint8_t n = 0;
@@ -412,10 +461,10 @@ static void sendHello() {
 #if FFB_HARDWARE_PRESENT
   caps |= CAP_FFB;
 #endif
-#if WHEEL_USE_NATIVE_USB
+#if LINK_NATIVE_USB
   caps |= CAP_NATIVE_USB;
 #endif
-#if WHEEL_G29_USB
+#if HAS_G29
   caps |= CAP_G29;
 #endif
 #if G29_CAN_HIDE
@@ -425,11 +474,11 @@ static void sendHello() {
   putU8 (txBuf, i, FW_MAJOR);
   putU8 (txBuf, i, FW_MINOR);
   putU8 (txBuf, i, caps);
-  putU8 (txBuf, i, NUM_BUTTONS);
+  putU8 (txBuf, i, BUTTON_COUNT);
   putU8 (txBuf, i, NUM_AXES);
   putU16(txBuf, i, reportHz);
   putU32(txBuf, i, (uint32_t)endstopCounts);
-  const char *p = DEVICE_NAME;
+  const char *p = BOARD_NAME;
   while (*p && i < MAX_PAYLOAD) txBuf[i++] = (uint8_t)*p++;
   sendFrame(MSG_HELLO, txBuf, i);
 }
@@ -442,7 +491,7 @@ static void sendState(int32_t pos, uint32_t nowMs) {
   if (encErrSeen)      flags |= 0x04;
   if (endstopHit)      flags |= 0x08;
   if (ffbWatchdogHit)  flags |= 0x10;
-#if WHEEL_G29_USB
+#if HAS_G29
   if (g29Usb.hostConfigured()) flags |= 0x20;   // Windows wyliczyl G29
   if (g29Fed)                  flags |= 0x40;   // raporty z aplikacji docieraja
   if (g29Usb.attached())       flags |= 0x80;   // G29 podlaczona do komputera
@@ -490,7 +539,7 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint8_t len) {
       break;
 
     case CMD_CENTER:
-      encOffset = encCount;
+      encOffset = encNow();
       sendAck(type, 1);
       break;
 
@@ -540,7 +589,7 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint8_t len) {
       sendAck(type, 1);
       break;
     }
-#if WHEEL_G29_USB
+#if HAS_G29
     case CMD_G29:
       if (g29Usb.setReport(p, len)) {
         g29LastCmdMs = millis();
@@ -563,7 +612,7 @@ static void handleCommand(uint8_t type, const uint8_t *p, uint8_t len) {
       ffbTarget  = 0;
       ffbApplied = 0;
       ffbOutput(0);
-      encOffset  = encCount;
+      encOffset  = encNow();
       sendAck(type, 1);
       sendHello();
       break;
@@ -599,7 +648,7 @@ static void pollSerial() {
       case 5: {
         uint8_t head[2] = { rType, rLen };
         uint8_t c = crc8(head, 2);
-        for (uint8_t i = 0; i < rLen; i++) c = CRC8_TABLE[c ^ rBuf[i]];
+        for (uint8_t i = 0; i < rLen; i++) c = crcStep(c, rBuf[i]);
         if (c == b) handleCommand(rType, rBuf, rLen);
         st = 0;
         break;
@@ -610,37 +659,47 @@ static void pollSerial() {
 
 // -------------------------------------------------------------------- setup
 
-void setup() {
-#if WHEEL_USE_NATIVE_USB
+static void portBegin() {
+#if WPORT_IS_TINYUSB
+  // Tozsamosc USB (G29) i port COM trzeba zglosic przed USB.begin().
+  #if HAS_G29
+  g29Usb.begin();
+  #endif
+  wheelCdc.begin();
+  USB.begin();
+#elif LINK_NATIVE_USB
   WPORT.begin(0);
 #else
+  #if defined(ARDUINO_ARCH_ESP32)
+  WPORT.setTxBufferSize(256);          // domyslnie tylko 128 B sprzetowej kolejki
+  #endif
   WPORT.begin(WHEEL_BAUD);
 #endif
+}
+
+void setup() {
+  portBegin();
 
   // --- przyciski ---
-  pinMode(BUTTON0_PIN, INPUT_PULLUP);
-  for (uint8_t pin = BUTTON_BANK_FIRST; pin <= BUTTON_BANK_LAST; pin++) {
-    pinMode(pin, INPUT_PULLUP);
-  }
+  for (uint8_t i = 0; i < BUTTON_COUNT; i++) pinMode(BUTTON_PINS[i], INPUT_PULLUP);
 
   // --- enkoder ---
   pinMode(ENC_A_PIN, INPUT_PULLUP);
   pinMode(ENC_B_PIN, INPUT_PULLUP);
-  encAPort = g_APinDescription[ENC_A_PIN].pPort;
-  encAMask = g_APinDescription[ENC_A_PIN].ulPin;
-  encBPort = g_APinDescription[ENC_B_PIN].pPort;
-  encBMask = g_APinDescription[ENC_B_PIN].ulPin;
+  encPinsInit();
   encState = encRead();
   attachInterrupt(digitalPinToInterrupt(ENC_A_PIN), encISR, CHANGE);
   attachInterrupt(digitalPinToInterrupt(ENC_B_PIN), encISR, CHANGE);
-  encOffset = encCount;
+  encOffset = encNow();
 
   // --- analogowe ---
   adcInit();
 
   // --- FFB ---
 #if FFB_HARDWARE_PRESENT
+  #if defined(ARDUINO_ARCH_SAM)
   analogWriteResolution(8);
+  #endif
   pinMode(FFB_EN_PIN, OUTPUT);
   digitalWrite(FFB_EN_PIN, LOW);
   pinMode(FFB_RPWM_PIN, OUTPUT);
@@ -675,12 +734,12 @@ void loop() {
     btnDebounce(btnSampleRaw());
     adcUpdate();
 
-    if (encErrors) { encErrors = 0; encErrSeen = true; }
+    if (encTakeErrors()) encErrSeen = true;
 
-    int32_t pos = encCount - encOffset;
+    int32_t pos = encNow() - encOffset;
     ffbUpdate(millis(), pos);
 
-#if WHEEL_G29_USB
+#if HAS_G29
     // aplikacja zamilkla - kierownica na srodek, pedaly puszczone
     if (g29Fed && (uint32_t)(millis() - g29LastCmdMs) > G29_TIMEOUT_MS) {
       g29Usb.setNeutral();
@@ -689,7 +748,7 @@ void loop() {
 #endif
   }
 
-#if WHEEL_G29_USB
+#if HAS_G29
   // 2b. raport G29 do Windowsa - tylko gdy endpoint jest wolny
   g29Usb.poll();
   {
@@ -702,7 +761,7 @@ void loop() {
   // 3. ramka stanu w stalym tempie
   if ((int32_t)(now - nextReport) >= 0) {
     nextReport = now + reportUs;
-    sendState(encCount - encOffset, millis());
+    sendState(encNow() - encOffset, millis());
   }
 
   // 4. dopoki PC sie nie odezwal, co 1 s wysylamy HELLO (pomaga autodetekcji)

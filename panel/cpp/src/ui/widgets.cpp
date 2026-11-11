@@ -7,6 +7,7 @@
 #include <format>
 #include <numbers>
 
+#include "../embedded_ids.h"
 #include "../util.h"
 
 namespace wb::ui {
@@ -2656,14 +2657,11 @@ void Sidebar::paint(Gfx& g) {
     g.fill_rect(r, SIDEBAR);
     g.fill_rect({r.right() - 1, r.y, 1, r.h}, BORDER);
 
-    // znak: kierownica w kolku
-    float lx = r.x + (compact_ ? r.w / 2 : 34), ly = r.y + 44;
-    g.stroke_circle(lx, ly, 14, ACCENT, 3);
-    g.polyline({{lx - 11, ly}, {lx + 11, ly}}, ACCENT, 3);
-    g.polyline({{lx, ly}, {lx, ly + 12}}, ACCENT, 3);
-    g.fill_circle(lx, ly, 4.5f, SIDEBAR);
-    g.stroke_circle(lx, ly, 4.5f, ACCENT, 2);
-    if (!compact_) g.text({lx + 24, ly - 15, 150, 30}, "Kierownica", Font::Head, TEXT);
+    // znak: logo programu (ta sama ikona co plik .exe, src/res/kierownica.ico)
+    constexpr float LOGO = 34.0f;
+    float lx = r.x + (compact_ ? r.w / 2 : 36), ly = r.y + 44;
+    g.icon(IDI_APP, {lx - LOGO / 2, ly - LOGO / 2, LOGO, LOGO});
+    if (!compact_) g.text({lx + 26, ly - 15, 150, 30}, "Kierownica", Font::Head, TEXT);
 
     for (const auto& [y, title] : headers_) g.text({r.x + 24, y + 8, r.w - 40, 16}, title, Font::Caps, MUTED);
 

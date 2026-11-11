@@ -23,10 +23,18 @@ inline constexpr const wchar_t* WINDOW_CLASS = L"KierownicaPanelWindow";
 inline constexpr const wchar_t* RUN_KEY = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 inline constexpr const wchar_t* RUN_VALUE = L"KierownicaPanel";
 
+// Komunikat "pokaz sie" od drugiej kopii panelu - okno moze byc schowane
+// w zasobniku, wiec samo ShowWindow nie wystarczy (panel musi o tym wiedziec).
+UINT show_message();
+
+// Pelna sciezka Kierownica.exe.
+std::filesystem::path exe_path();
+
 // True, gdy to jedyna dzialajaca kopia panelu.
 bool claim_single_instance(const wchar_t* name = INSTANCE_MUTEX);
 
-// Przywraca i wysuwa na wierzch okno panelu innego procesu.
+// Przywraca i wysuwa na wierzch okno panelu innego procesu (takze schowane
+// w zasobniku).
 bool bring_to_front(const std::wstring& title_prefix);
 
 // Polecenie dla klucza Run: program + --minimized.
@@ -37,6 +45,10 @@ std::optional<std::wstring> autostart_get(const wchar_t* key = RUN_KEY, const wc
 // Wpisuje polecenie do klucza Run; nullopt usuwa wpis. False przy bledzie.
 bool autostart_set(const std::optional<std::wstring>& command, const wchar_t* key = RUN_KEY,
                    const wchar_t* value = RUN_VALUE);
+// Czy z Windowsem startuje wlasnie ten program (a nie inna kopia panelu).
+bool autostart_points_here();
+// Wlacza (dla tego programu) albo usuwa autostart. False przy bledzie.
+bool autostart_enable(bool on);
 
 struct Geometry {
     int w, h, x, y;

@@ -21,6 +21,8 @@
 namespace wb {
 
 inline constexpr const char* APP_NAME = "KierownicaPanel";
+// Plik obok Kierownica.exe: ustawienia zostaja w katalogu programu (wersja przenosna).
+inline constexpr const char* PORTABLE_MARKER = "portable.txt";
 
 using Names = std::vector<std::string>;
 using LabelMap = std::map<std::string, std::string>;
@@ -158,6 +160,7 @@ struct PadConfig {
 
 struct LinkConfig {
     std::string port;             // "" = autodetekcja
+    std::string board;            // plytka dla "Wgraj firmware", "" = wedlug HELLO
     int baudrate = protocol::DEFAULT_BAUD;
     bool auto_connect = true;
     int report_hz = 333;
@@ -195,11 +198,13 @@ struct UiConfig {
     std::string geometry;         // "SZERxWYS+X+Y" zwyklego okna, "" = na srodku
     bool zoomed = false;
     int tab = 0;
+    bool tray = true;             // zamkniecie okna chowa panel do zasobnika
+    bool updates = true;          // sprawdzanie aktualizacji przy starcie
     bool operator==(const UiConfig&) const = default;
 };
 
 std::filesystem::path config_path();
-// Inny plik konfiguracji (opcja --config); pusty = domyslny obok programu.
+// Inny plik konfiguracji (opcja --config); pusty = domyslny (patrz config_path).
 void set_config_path_override(const std::filesystem::path& path);
 
 struct AppConfig {

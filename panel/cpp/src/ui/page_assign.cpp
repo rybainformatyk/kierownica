@@ -88,9 +88,10 @@ void G29Page::refresh(const Frame& f, bool visible) {
     std::string state = app_.g29_state(f.connected, f.st);
     if (state == "offline") state_->set("Brak połączenia z płytką", MUTED);
     else if (state == "old_fw") state_->set("Firmware bez trybu G29", BAD);
+    else if (state == "no_board") state_->set("Płytka bez G29 - użyj vJoy lub pada", BAD);
     else if (!cfg().output.g29_on()) state_->set("Tryb G29 wyłączony", WARN);
     else if (state == "attaching" || state == "detecting") state_->set("G29 podłącza się…", WARN);
-    else if (state == "no_usb") state_->set("Podłącz Native USB", BAD);
+    else if (state == "no_usb") state_->set(f.st.g29_same_cable ? "Windows nie widzi G29" : "Podłącz Native USB", BAD);
     else state_->set("Windows widzi G29", GOOD);
     sync_view();
 

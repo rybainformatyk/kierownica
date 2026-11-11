@@ -149,6 +149,27 @@ std::string HelloInfo::firmware() const {
     return std::to_string(fw_major) + "." + std::to_string(fw_minor);
 }
 
+const BoardInfo* board_by_key(const std::string& key) {
+    for (const BoardInfo& b : BOARDS)
+        if (key == b.key) return &b;
+    return nullptr;
+}
+
+const BoardInfo* board_by_hello(const std::string& hello_name) {
+    for (const BoardInfo& b : BOARDS)
+        if (hello_name == b.hello) return &b;
+    return nullptr;
+}
+
+std::string board_label(const std::string& hello_name) {
+    // Uno i Nano oraz Leonardo i Micro maja ten sam firmware - z HELLO nie
+    // da sie ich rozroznic.
+    if (hello_name == "KIEROWNICA-UNO") return "Arduino Uno / Nano";
+    if (hello_name == "KIEROWNICA-LEONARDO") return "Arduino Leonardo / Micro";
+    if (const BoardInfo* b = board_by_hello(hello_name)) return b->label;
+    return hello_name;
+}
+
 std::optional<StateFrame> decode_state(const Bytes& payload, double host_time) {
     if (payload.size() < STATE_SIZE) return std::nullopt;
     const uint8_t* p = payload.data();

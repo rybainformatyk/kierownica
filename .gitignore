@@ -12,6 +12,9 @@ panel/python/config.json.*
 
 # Wynik kompilacji panelu w C++ (takze jego config.json)
 panel/cpp/bin/
+panel/cpp/dist/
+# instalatory sterownikow pobierane przez installer/pobierz_sterowniki.ps1
+panel/cpp/installer/deps/
 
 # Stare wersje i proby - tylko lokalnie
 _archiwum/

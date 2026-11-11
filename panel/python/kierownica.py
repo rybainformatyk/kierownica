@@ -66,6 +66,15 @@ def main() -> None:
              "Ta instalacja Pythona nie ma modułu tkinter.\n"
              "Zainstaluj Pythona z python.org z domyślnymi opcjami.")
 
+    # Pasek zadan grupuje okna po identyfikatorze aplikacji - bez wlasnego
+    # pokazywalby ikone pythonw.exe zamiast logo panelu.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KierownicaDIY.PanelPython")
+        except Exception:
+            pass
+
     try:
         from wheelbridge.ui.app import main as run_app
         run_app()

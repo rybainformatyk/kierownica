@@ -1,5 +1,6 @@
 #include "app.h"
 
+#include <commctrl.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <timeapi.h>
@@ -14,6 +15,7 @@
 #include <fstream>
 
 #include "../embedded.h"
+#include "../embedded_ids.h"
 #include "../json.h"
 #include "../util.h"
 #include "../winsys.h"
@@ -72,6 +74,7 @@ PanelApp::PanelApp(const AppOptions& options) : options_(options) {
     std::string load_problem = last_load_problem;
     saved_snapshot_ = config_snapshot();
     engine_ = std::make_unique<WheelEngine>(cfg_, [this](const std::string& l, const std::string& m) { enqueue_log(l, m); });
+    updater_ = std::make_unique<update::Updater>(APP_VERSION_TEXT, update::install_kind(exe_dir()));
     title_ = std::string(APP_TITLE) + " " + APP_VERSION;
 
     g_app = this;
@@ -138,7 +141,7 @@ void PanelApp::open_link_popover() {
     LinkState state = engine_->link().state();
     if (auto hello = engine_->hello()) {
         LinkStats stats = engine_->link_stats();
-        box->add(mk<Label>(std::format("{} · firmware {} · {:.0f} Hz · opóźnienie {:.1f} ms", hello->name, hello->firmware(), stats.frames_per_sec, stats.latency_ms), Font::Small, TEXT_DIM, 2000.0f), Pack{.top = 10});
+        box->add(mk<Label>(std::format("{} · firmware {} · {:.0f} Hz · opóźnienie {:.1f} ms", hello->board(), hello->firmware(), stats.frames_per_sec, stats.latency_ms), Font::Small, TEXT_DIM, 2000.0f), Pack{.top = 10});
     }
 
     bool active = state == LinkState::Connected || state == LinkState::Scanning;
@@ -239,18 +242,27 @@ void PanelApp::flash_firmware() {
         inform("Wgraj firmware", "Nie udało się rozpakować plików firmware z programu do %LOCALAPPDATA%\\Kierownica.", MB_ICONWARNING);
         return;
     }
-    if (!ask("Wgraj firmware", std::format("Wgrać firmware {} na płytkę?\n\nPanel rozłączy się z płytką na czas wgrywania "
-                                           "(gra straci kierownicę) i połączy się ponownie, gdy zamkniesz okno wgrywania.", protocol::FW_LATEST_TEXT)))
-        return;
-    // Port z dzialajacego polaczenia - skrypt sam szuka tylko oryginalnego Due
-    // (VID 2341/2A03), a klon z innym ukladem USB by przeoczyl.
+    // Plytka: wybrana w Diagnostyce albo ta, ktora sie przedstawila w HELLO.
+    // Bez jednej i drugiej skrypt rozpozna ja po identyfikatorze USB.
     LinkState state = engine_->link().state();
+    auto hello = engine_->hello();
+    const protocol::BoardInfo* board = protocol::board_by_key(cfg_.link.board);
+    if (!board && hello) board = protocol::board_by_hello(hello->name);
+    // Port z dzialajacego polaczenia - skrypt rozpoznaje tylko oryginalne
+    // plytki, a klon z innym ukladem USB by przeoczyl.
     std::string port = state == LinkState::Connected ? engine_->link_stats().port : cfg_.link.port;
+    std::string target = board ? board->label : std::string("płytkę (rozpozna ją skrypt)");
+    if (!port.empty()) target += " na " + port;
+    if (!ask("Wgraj firmware", std::format("Wgrać firmware {} na {}?\n\nPanel rozłączy się z płytką na czas wgrywania "
+                                           "(gra straci kierownicę) i połączy się ponownie, gdy zamkniesz okno wgrywania.\n\n"
+                                           "Inną płytkę wybierzesz w Diagnostyce (pole Płytka).", protocol::FW_LATEST_TEXT, target)))
+        return;
     flash_reconnect_ = state == LinkState::Connected || state == LinkState::Scanning;
     engine_->disconnect();
 
     std::wstring cmd = L"cmd.exe /c \"\"" + script.wstring() + L"\"";
-    if (!port.empty()) cmd += L" " + widen(port);
+    if (board) cmd += L" -Plytka " + widen(board->key);
+    if (!port.empty()) cmd += L" -Port " + widen(port);
     cmd += L"\"";
     std::wstring cwd = script.parent_path().wstring();
     STARTUPINFOW si{};
@@ -367,7 +379,7 @@ void PanelApp::drain_log() {
 
 std::string PanelApp::g29_state(bool connected, const EngineStatus& st) const {
     if (!connected) return "offline";
-    if (!st.g29_fw) return "old_fw";
+    if (!st.g29_fw) return st.g29_unsupported ? "no_board" : "old_fw";
     if (!st.g29_attached) return cfg_.output.g29_wanted() ? "attaching" : "hidden";
     if (!st.g29_usb) {
         // Po ponownym podlaczeniu Windows wylicza G29 1-2 s - bez tego przez
@@ -399,9 +411,10 @@ std::pair<std::string, int> PanelApp::output_summary(bool connected, const Engin
         if (!st.pad_ok) level = 2;
     }
     if (cfg_.output.g29_on()) {
-        static const std::map<std::string, std::pair<std::string, int>> g29_text = {
-            {"offline", {"G29: brak płytki", 2}}, {"old_fw", {"G29: stary firmware", 2}}, {"attaching", {"G29: podłączanie", 1}},
-            {"detecting", {"G29: wykrywanie", 1}}, {"no_usb", {"G29: podłącz Native USB", 2}}, {"ok", {"G29", 0}}};
+        const std::map<std::string, std::pair<std::string, int>> g29_text = {
+            {"offline", {"G29: brak płytki", 2}}, {"old_fw", {"G29: stary firmware", 2}}, {"no_board", {"G29: płytka bez USB", 2}},
+            {"attaching", {"G29: podłączanie", 1}}, {"detecting", {"G29: wykrywanie", 1}},
+            {"no_usb", {st.g29_same_cable ? "G29: niewidoczna" : "G29: podłącz Native USB", 2}}, {"ok", {"G29", 0}}};
         auto it = g29_text.find(g29_state(connected, st));
         parts.push_back(it == g29_text.end() ? "G29" : it->second.first);
         if (it != g29_text.end()) level = std::max(level, it->second.second);
@@ -458,7 +471,13 @@ std::string PanelApp::output_hint(bool connected, const EngineStatus& st) const 
     bool vjoy_ok = st.output_ok, pad_ok = st.pad_ok;
     std::string g29 = g29_state(connected, st);
     if (out.g29_on() && g29 == "old_fw") return "Firmware płytki nie ma trybu G29 - wgraj nowy (Diagnostyka → Wgraj firmware).";
-    if (out.g29_on() && g29 == "no_usb") return "Windows nie widzi G29 - podłącz drugi kabel do portu Native USB płytki.";
+    if (out.g29_on() && g29 == "no_board") {
+        auto hello = engine_->hello();
+        return (hello ? hello->board() : std::string("Ta płytka")) + " nie ma natywnego USB, więc nie udaje G29. Wybierz tryb vJoy albo pad Xbox (przycisk trybu u góry).";
+    }
+    if (out.g29_on() && g29 == "no_usb")
+        return st.g29_same_cable ? "Windows nie widzi G29 - odłącz i podłącz kabel USB płytki."
+                                 : "Windows nie widzi G29 - podłącz drugi kabel do portu Native USB płytki.";
     if (st.vjoy_switching) {
         auto wanted = out.vjoy_wanted();
         return std::string(!wanted ? "Przełączam" : (*wanted ? "Włączam" : "Wyłączam")) + " vJoy - Windows pyta o zgodę administratora (okno UAC).";
@@ -533,7 +552,7 @@ void PanelApp::refresh_shell(const Frame& f) {
     sidebar_->set_badge(TAB_DASH, board_flags ? "!" : "", WARN);  // szczegoly na Pulpicie
     sidebar_->set_badge(TAB_FFB, cfg_.ffb.enabled ? "ON" : "", GOOD);
     std::string g29 = g29_state(f.connected, st);
-    bool g29_bad = cfg_.output.g29_on() && (g29 == "old_fw" || g29 == "no_usb");
+    bool g29_bad = cfg_.output.g29_on() && (g29 == "old_fw" || g29 == "no_board" || g29 == "no_usb");
     sidebar_->set_badge(TAB_G29, g29_bad ? "!" : "", BAD);
     sidebar_->set_badge(TAB_DIAG, unread_alerts_ > 0 ? std::to_string(std::min(unread_alerts_, 99)) : "", WARN);
 }
@@ -556,17 +575,20 @@ void PanelApp::refresh() {
     vjoy_was_switching_ = f.st.vjoy_switching;
 
     poll_flash();
+    poll_updater();
     refresh_title(f.link, f.stats.port);
     if (was_connected_ && (f.link == LinkState::Scanning || f.link == LinkState::Error)) {
         // Plytka zniknela sama (nie "Rozlacz") - przy grze na pierwszym planie
         // nikt nie patrzy na panel, wiec mruga pasek zadan.
-        if (!flash_proc_ && !winsys::is_foreground(hwnd_)) winsys::flash_taskbar(hwnd_);
+        if (!flash_proc_ && in_tray_) tray_.balloon(L"Płytka przestała odpowiadać", L"Gry straciły kierownicę. Panel połączy się sam, gdy płytka wróci.", NIIF_WARNING);
+        else if (!flash_proc_ && !winsys::is_foreground(hwnd_)) winsys::flash_taskbar(hwnd_);
         Ui::get().toast("Płytka przestała odpowiadać", BAD, ic::warn);
     }
     if (!was_connected_ && f.connected) Ui::get().toast("Połączono z płytką na " + f.stats.port, GOOD, ic::usb);
     was_connected_ = f.connected;
 
     refresh_shell(f);
+    refresh_tray(f);
     int tab = pages_->current();
     for (int i = 0; i < TAB_COUNT; ++i) page_list_[static_cast<size_t>(i)]->refresh(f, i == tab);
 }
@@ -655,52 +677,20 @@ void PanelApp::apply_frame_style() {
 bool PanelApp::create_window() {
     HINSTANCE inst = GetModuleHandleW(nullptr);
 
-    // Prosta ikona rysowana w locie - brak zewnetrznych plikow.
-    const int n = 32;
-    std::vector<uint32_t> pixels(static_cast<size_t>(n * n), 0);
-    auto put = [&](int x, int y) { if (x >= 0 && y >= 0 && x < n && y < n) pixels[static_cast<size_t>(y * n + x)] = 0xFF000000u | ACCENT; };
-    for (int y = 0; y < n; ++y)
-        for (int x = 0; x < n; ++x) {
-            double d = std::hypot(x - 15.5, y - 15.5);
-            if ((d >= 11.5 && d <= 15.0) || d <= 3.5) put(x, y);
-        }
-    for (int t = 4; t < 12; ++t) {
-        put(15, 15 - t);
-        put(15 - t, 15 + t / 2);
-        put(15 + t, 15 + t / 2);
-    }
-    BITMAPV5HEADER bi{};
-    bi.bV5Size = sizeof(bi);
-    bi.bV5Width = n;
-    bi.bV5Height = -n;
-    bi.bV5Planes = 1;
-    bi.bV5BitCount = 32;
-    bi.bV5Compression = BI_BITFIELDS;
-    bi.bV5RedMask = 0x00FF0000;
-    bi.bV5GreenMask = 0x0000FF00;
-    bi.bV5BlueMask = 0x000000FF;
-    bi.bV5AlphaMask = 0xFF000000;
-    void* bits = nullptr;
-    HDC dc = GetDC(nullptr);
-    HBITMAP color = CreateDIBSection(dc, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS, &bits, nullptr, 0);
-    ReleaseDC(nullptr, dc);
-    if (bits) memcpy(bits, pixels.data(), pixels.size() * 4);
-    HBITMAP mask = CreateBitmap(n, n, 1, 1, nullptr);
-    ICONINFO ii{};
-    ii.fIcon = TRUE;
-    ii.hbmColor = color;
-    ii.hbmMask = mask;
-    HICON icon = CreateIconIndirect(&ii);
-    DeleteObject(color);
-    DeleteObject(mask);
+    // Ikony z zasobow (src/res, tools/make_icon.py) - w rozmiarach dla biezacego DPI.
+    LoadIconMetric(inst, MAKEINTRESOURCEW(IDI_APP), LIM_LARGE, &icon_big_);
+    LoadIconMetric(inst, MAKEINTRESOURCEW(IDI_APP), LIM_SMALL, &icon_small_);
+    // zasobnik: sama kierownica bez kafelka - w 16 px kafelek zjadalby rysunek
+    LoadIconMetric(inst, MAKEINTRESOURCEW(IDI_TRAY_ON), LIM_SMALL, &icon_tray_on_);
+    LoadIconMetric(inst, MAKEINTRESOURCEW(IDI_TRAY_OFF), LIM_SMALL, &icon_tray_off_);
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
     wc.lpfnWndProc = wnd_proc;
     wc.hInstance = inst;
-    wc.hIcon = icon;
-    wc.hIconSm = icon;
+    wc.hIcon = icon_big_;
+    wc.hIconSm = icon_small_;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = winsys::WINDOW_CLASS;
     RegisterClassExW(&wc);
@@ -710,7 +700,23 @@ bool PanelApp::create_window() {
     if (!hwnd_) return false;
     dpi_ = GetDpiForWindow(hwnd_);
     apply_frame_style();
+    apply_window_icons();
     return true;
+}
+
+void PanelApp::apply_window_icons() {
+    // Ikona klasy okna ma rozmiar dla DPI systemu - przy 125-150 % pasek
+    // zadan rozciagalby 32 px. Kazdy rozmiar bierzemy wprost z .ico.
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    HICON large_icon = nullptr, small_icon = nullptr;
+    LoadIconWithScaleDown(inst, MAKEINTRESOURCEW(IDI_APP), GetSystemMetricsForDpi(SM_CXICON, dpi_), GetSystemMetricsForDpi(SM_CYICON, dpi_), &large_icon);
+    LoadIconWithScaleDown(inst, MAKEINTRESOURCEW(IDI_APP), GetSystemMetricsForDpi(SM_CXSMICON, dpi_), GetSystemMetricsForDpi(SM_CYSMICON, dpi_), &small_icon);
+    if (large_icon) SendMessageW(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(large_icon));
+    if (small_icon) SendMessageW(hwnd_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small_icon));
+    if (large_icon && icon_window_big_) DestroyIcon(icon_window_big_);
+    if (small_icon && icon_window_small_) DestroyIcon(icon_window_small_);
+    if (large_icon) icon_window_big_ = large_icon;
+    if (small_icon) icon_window_small_ = small_icon;
 }
 
 // Okno tam, gdzie bylo przy zamknieciu, a pierwszy raz - na srodku. Rozmiar
@@ -749,10 +755,16 @@ void PanelApp::store_ui_state() {
     cfg_.ui.tab = pages_->current();
 }
 
+void PanelApp::request_close() {
+    if (cfg_.ui.tray && tray_.added()) hide_to_tray();
+    else on_close();
+}
+
 void PanelApp::on_close() {
     if (closing_) return;
     closing_ = true;
     if (hwnd_) KillTimer(hwnd_, TIMER_ID);
+    tray_.remove();
     store_ui_state();
     try {
         cfg_.save();
@@ -766,7 +778,311 @@ void PanelApp::on_close() {
 void PanelApp::on_caption(int caption) {
     if (caption == 1) ShowWindow(hwnd_, SW_MINIMIZE);
     else if (caption == 2) ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
-    else if (caption == 3) on_close();
+    else if (caption == 3) request_close();
+}
+
+// ------------------------------------------------------------------ zasobnik
+//
+// Panel musi dzialac, zeby gry widzialy kierownice (G29 dostaje raporty od
+// panelu, vJoy i pad tez). Dlatego krzyzyk domyslnie tylko chowa okno do
+// zasobnika, a autostart uruchamia panel od razu w tle.
+
+void PanelApp::setup_tray() {
+    if (!tray_.add(hwnd_, icon_tray_off_, widen(title_))) enqueue_log("warn", "Nie udało się dodać ikony do zasobnika - zamknięcie okna zakończy panel");
+}
+
+void PanelApp::hide_to_tray() {
+    Ui::get().close_overlay();
+    remember_geometry();
+    ShowWindow(hwnd_, SW_HIDE);
+    in_tray_ = true;
+    if (!tray_hint_shown_) {
+        tray_hint_shown_ = true;
+        tray_.balloon(L"Panel kierownicy działa w tle",
+                      L"Gry dalej widzą kierownicę. Kliknij ikonę, żeby otworzyć panel - "
+                      L"Zakończ jest w menu pod prawym przyciskiem.");
+    }
+}
+
+void PanelApp::show_window() {
+    in_tray_ = false;
+    if (!ever_shown_) {
+        ever_shown_ = true;
+        ShowWindow(hwnd_, cfg_.ui.zoomed ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
+    } else if (IsIconic(hwnd_)) {
+        ShowWindow(hwnd_, SW_RESTORE);
+    } else {
+        ShowWindow(hwnd_, SW_SHOW);
+    }
+    SetForegroundWindow(hwnd_);
+    set_timer_period(UI_PERIOD_MS);
+    request_paint();
+}
+
+namespace {
+enum TrayCmd : UINT {
+    CMD_SHOW = 1,
+    CMD_CONNECT,
+    CMD_AUTOSTART,
+    CMD_TRAY,
+    CMD_EXIT,
+    CMD_UPDATE,
+    CMD_MODE = 100,  // + indeks w MODE_INFO
+};
+} // namespace
+
+void PanelApp::show_tray_menu(POINT at) {
+    HMENU menu = CreatePopupMenu();
+    HMENU modes = CreatePopupMenu();
+    if (!menu || !modes) return;
+
+    LinkState state = engine_->link().state();
+    bool active = state == LinkState::Connected || state == LinkState::Scanning;
+    auto hello = engine_->hello();
+    std::wstring board = state == LinkState::Connected
+        ? widen(std::format("Płytka: {} ({})", hello ? hello->board() : "?", engine_->link_stats().port))
+        : widen(std::string("Płytka: ") + (state == LinkState::Scanning ? "szukanie…" : "rozłączona"));
+
+    AppendMenuW(menu, MF_STRING, CMD_SHOW, L"Otwórz panel");
+    SetMenuDefaultItem(menu, CMD_SHOW, FALSE);
+    update::State upd = updater_->state();
+    if ((upd.phase == update::State::Phase::Available || upd.phase == update::State::Phase::Ready) && upd.release)
+        AppendMenuW(menu, MF_STRING, CMD_UPDATE, widen("Zaktualizuj do wersji " + upd.release->version).c_str());
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, board.c_str());
+    AppendMenuW(menu, MF_STRING | (flash_proc_ ? MF_GRAYED : 0), CMD_CONNECT, active ? L"Rozłącz" : L"Połącz");
+    const UINT last_mode = CMD_MODE + static_cast<UINT>(MODE_INFO.size()) - 1;
+    for (size_t i = 0; i < MODE_INFO.size(); ++i) {
+        std::string key = MODE_INFO[i].key;
+        // plytka bez natywnego USB nie wystawi G29 - nie ma czego wybierac
+        bool g29 = key == "g29" || key == "g29_vjoy";
+        UINT id = CMD_MODE + static_cast<UINT>(i);
+        AppendMenuW(modes, MF_STRING | ((g29 && hello && hello->g29_unsupported()) ? MF_GRAYED : 0), id, widen(MODE_INFO[i].title).c_str());
+        if (key == cfg_.output.mode) CheckMenuRadioItem(modes, CMD_MODE, last_mode, id, MF_BYCOMMAND);
+    }
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(modes), L"Tryb wyjścia");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING | (winsys::autostart_points_here() ? MF_CHECKED : 0), CMD_AUTOSTART, L"Uruchamiaj razem z Windowsem");
+    AppendMenuW(menu, MF_STRING | (cfg_.ui.tray ? MF_CHECKED : 0), CMD_TRAY, L"Zamknięcie okna chowa panel tutaj");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, CMD_EXIT, L"Zakończ");
+
+    // bez tego menu nie znika po kliknieciu obok
+    SetForegroundWindow(hwnd_);
+    UINT align = GetSystemMetrics(SM_MENUDROPALIGNMENT) ? TPM_RIGHTALIGN : TPM_LEFTALIGN;
+    UINT cmd = static_cast<UINT>(TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | align | TPM_BOTTOMALIGN, at.x, at.y, hwnd_, nullptr));
+    PostMessageW(hwnd_, WM_NULL, 0, 0);
+    DestroyMenu(menu);  // niszczy tez podmenu
+
+    switch (cmd) {
+    case 0: break;
+    case CMD_SHOW: show_window(); break;
+    case CMD_CONNECT: toggle_connect(); break;
+    case CMD_AUTOSTART: {
+        bool want = !winsys::autostart_points_here();
+        if (!winsys::autostart_enable(want)) enqueue_log("error", "Nie udało się zmienić autostartu");
+        else enqueue_log(want ? "ok" : "info", want ? "Panel będzie startował razem z Windowsem" : "Panel nie startuje już razem z Windowsem");
+        diag_->sync_autostart();
+        break;
+    }
+    case CMD_TRAY: cfg_.ui.tray = !cfg_.ui.tray; break;
+    case CMD_EXIT: on_close(); break;
+    case CMD_UPDATE: show_window(); update_action(); break;
+    default:
+        if (cmd >= CMD_MODE && cmd <= last_mode) set_mode(MODE_INFO[cmd - CMD_MODE].key);
+        break;
+    }
+}
+
+// ------------------------------------------------------------- aktualizacje
+
+namespace {
+
+// Opis wydania do okna pytania - bez markdownu i nie dluzszy niz kilkanascie linii.
+std::string short_notes(const std::string& notes) {
+    std::string out;
+    int lines = 0;
+    size_t pos = 0;
+    while (pos < notes.size() && lines < 12) {
+        size_t end = notes.find('\n', pos);
+        std::string line = notes.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        pos = end == std::string::npos ? notes.size() : end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        size_t start = line.find_first_not_of("#* ");
+        if (start == std::string::npos) continue;
+        out += (line[0] == '*' || line[0] == '-' ? "• " : "") + line.substr(start) + "\n";
+        ++lines;
+    }
+    return out;
+}
+
+} // namespace
+
+void PanelApp::update_action() {
+    using P = update::State::Phase;
+    update::State s = updater_->state();
+    if (s.phase == P::Checking || s.phase == P::Downloading) return;
+    if (s.phase == P::Available && s.release && !s.can_install) {
+        // wydanie bez pliku dla tej instalacji albo bez sum kontrolnych - tylko strona
+        std::wstring page = widen(s.release->page.empty() ? update::RELEASES_PAGE : s.release->page);
+        ShellExecuteW(nullptr, L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    if ((s.phase == P::Available || s.phase == P::Ready) && s.release) {
+        std::string notes = short_notes(s.release->notes);
+        std::string how = updater_->kind() == update::InstallKind::Installer
+                              ? "Instalator zrobi resztę sam"
+                              : "Nowy Kierownica.exe zastąpi obecny";
+        if (!ask("Aktualizacja panelu",
+                 std::format("Zainstalować wersję {} (masz {})?\n\n{}{}"
+                             "{}. Panel zamknie się na kilka sekund - gra straci kierownicę - i uruchomi się ponownie z tymi samymi ustawieniami.",
+                             s.release->version, APP_VERSION, notes.empty() ? "" : "Co nowego:\n", notes.empty() ? "" : notes + "\n", how)))
+            return;
+        if (s.phase == P::Ready) {
+            install_update(s);
+        } else {
+            install_when_ready_ = true;
+            updater_->download();
+        }
+        return;
+    }
+    updater_->check(true);
+}
+
+void PanelApp::poll_updater() {
+    using P = update::State::Phase;
+    if (update_check_at_ > 0 && monotonic() >= update_check_at_) {
+        update_check_at_ = 0;
+        updater_->check(false);
+    }
+    update::State s = updater_->state();
+    if (s.serial == update_serial_) return;
+    update_serial_ = s.serial;
+    diag_->set_update(s, updater_->kind());
+
+    switch (s.phase) {
+    case P::Available:
+        if (install_when_ready_) {
+            // pobieranie sie nie udalo - stan wrocil do "dostepna"
+            install_when_ready_ = false;
+            enqueue_log("error", s.message);
+            inform("Aktualizacja panelu", s.message, MB_ICONWARNING);
+            break;
+        }
+        enqueue_log("info", std::format("Dostępna nowa wersja panelu: {} (masz {})", s.release ? s.release->version : "?", APP_VERSION));
+        Ui::get().toast(s.message + " - Diagnostyka → Aktualizacje", ACCENT, ic::download);
+        if (in_tray_ && s.release)
+            tray_.balloon(widen("Dostępna wersja " + s.release->version + " panelu kierownicy"),
+                          L"Kliknij prawym przyciskiem ikonę i wybierz Zaktualizuj.");
+        break;
+    case P::UpToDate:
+        if (s.manual) Ui::get().toast(s.message, GOOD, ic::check);
+        break;
+    case P::Failed:
+        enqueue_log(s.manual ? "warn" : "info", "Aktualizacje: " + s.message);
+        if (s.manual) Ui::get().toast(s.message, WARN, ic::warn);
+        break;
+    case P::Ready:
+        if (install_when_ready_) {
+            install_when_ready_ = false;
+            install_update(s);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+void PanelApp::install_update(const update::State& s) {
+    if (flash_proc_) {
+        inform("Aktualizacja panelu", "Trwa wgrywanie firmware - zaktualizuj panel po zamknięciu okna wgrywania.", MB_ICONINFORMATION);
+        return;
+    }
+    std::error_code ec;
+    if (s.file.empty() || !fs::is_regular_file(s.file, ec)) {
+        inform("Aktualizacja panelu", "Pobrany plik zniknął - spróbuj jeszcze raz.", MB_ICONWARNING);
+        return;
+    }
+    if (updater_->kind() == update::InstallKind::Installer) {
+        // Instalator czeka, az panel sie zamknie, i na koniec uruchamia go ponownie
+        // (/UPDATE=tray - od razu w zasobniku).
+        std::wstring file = s.file.wstring();
+        std::wstring params = std::wstring(L"/SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=") + (in_tray_ ? L"tray" : L"1");
+        SHELLEXECUTEINFOW sei{};
+        sei.cbSize = sizeof(sei);
+        sei.fMask = SEE_MASK_NOASYNC;
+        sei.hwnd = hwnd_;
+        sei.lpVerb = L"open";
+        sei.lpFile = file.c_str();
+        sei.lpParameters = params.c_str();
+        sei.nShow = SW_SHOWNORMAL;
+        if (!ShellExecuteExW(&sei)) {
+            inform("Aktualizacja panelu", "Nie udało się uruchomić instalatora: " + win_error_text(GetLastError()), MB_ICONERROR);
+            return;
+        }
+    } else {
+        // Wersja przenosna: dzialajacy exe da sie przemianowac (nie nadpisac),
+        // wiec stary idzie na bok, nowy na jego miejsce, a .old usuwa nowa wersja.
+        fs::path exe = winsys::exe_path();
+        fs::path old = exe;
+        old += update::OLD_EXE_SUFFIX;
+        fs::remove(old, ec);
+        if (!MoveFileExW(exe.c_str(), old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            inform("Aktualizacja panelu", "Nie da się podmienić programu w " + narrow(exe.parent_path().wstring()) + ": " + win_error_text(GetLastError()), MB_ICONERROR);
+            return;
+        }
+        if (!CopyFileW(s.file.c_str(), exe.c_str(), FALSE)) {
+            std::string error = win_error_text(GetLastError());
+            MoveFileExW(old.c_str(), exe.c_str(), MOVEFILE_REPLACE_EXISTING);  // wracamy do starej wersji
+            inform("Aktualizacja panelu", "Nie udało się zapisać nowej wersji: " + error, MB_ICONERROR);
+            return;
+        }
+        std::wstring cmd = L"\"" + exe.wstring() + L"\" --po-aktualizacji" + (in_tray_ ? L" --minimized" : L"");
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, exe.parent_path().c_str(), &si, &pi)) {
+            inform("Aktualizacja panelu", "Nowa wersja jest zapisana, ale nie dało się jej uruchomić - uruchom panel ręcznie.", MB_ICONWARNING);
+        } else {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+    }
+    enqueue_log("info", "Instalacja wersji " + (s.release ? s.release->version : std::string("?")) + " - panel uruchomi się ponownie");
+    on_close();
+}
+
+// Pierwszy start nowej wersji: stary exe (wersja przenosna) i pobrane pliki
+// nie sa juz potrzebne.
+void PanelApp::cleanup_after_update() {
+    std::error_code ec;
+    fs::path old = winsys::exe_path();
+    old += update::OLD_EXE_SUFFIX;
+    for (int i = 0; i < 20 && fs::exists(old, ec); ++i) {  // stara wersja moze jeszcze konczyc
+        if (fs::remove(old, ec)) break;
+        Sleep(100);
+    }
+    fs::remove_all(update::download_dir(), ec);
+    enqueue_log("ok", std::string("Panel zaktualizowany do wersji ") + APP_VERSION);
+    Ui::get().toast(std::string("Zaktualizowano do wersji ") + APP_VERSION, GOOD, ic::check);
+}
+
+std::wstring PanelApp::tray_tip(const Frame& f) const {
+    std::string text = std::string(APP_TITLE) + " " + APP_VERSION;
+    if (flash_proc_) {
+        text += "\nWgrywanie firmware";
+    } else if (f.connected) {
+        auto hello = engine_->hello();
+        text += std::format("\n{} · {}", hello ? hello->board() : "płytka", f.stats.port);
+        text += "\n" + output_summary(true, f.st).first;
+    } else {
+        text += f.link == LinkState::Scanning ? "\nSzukam płytki…" : "\nPłytka rozłączona";
+    }
+    return widen(text);
+}
+
+void PanelApp::refresh_tray(const Frame& f) {
+    tray_.update(f.connected ? icon_tray_on_ : icon_tray_off_, tray_tip(f));
 }
 
 void PanelApp::set_timer_period(UINT ms) {
@@ -791,11 +1107,11 @@ void PanelApp::tick() {
 
     // Zminimalizowane albo w calosci zasloniete okno odswiezamy rzadko - w
     // trakcie gry panel nie zabiera jej procesora na rysowanie.
-    if (hidden_ || now - hidden_t_ >= HIDDEN_CHECK_S) {
+    if (!in_tray_ && (hidden_ || now - hidden_t_ >= HIDDEN_CHECK_S)) {
         hidden_t_ = now;
         hidden_ = winsys::window_hidden(hwnd_);
     }
-    set_timer_period((IsIconic(hwnd_) || hidden_) ? UI_IDLE_PERIOD_MS : UI_PERIOD_MS);
+    set_timer_period((in_tray_ || IsIconic(hwnd_) || hidden_) ? UI_IDLE_PERIOD_MS : UI_PERIOD_MS);
     request_paint();
 }
 
@@ -935,6 +1251,7 @@ LRESULT PanelApp::handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DPICHANGED: {
         dpi_ = HIWORD(wp);
+        apply_window_icons();
         if (target_) target_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
         Gfx::get().drop_resources();
         const RECT* rc = reinterpret_cast<const RECT*>(lp);
@@ -1050,12 +1367,38 @@ LRESULT PanelApp::handle_message(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         request_paint();
         return 0;
     case WM_CLOSE:
-        on_close();
+        request_close();
+        return 0;
+    case WM_ENDSESSION:
+        // wylogowanie / zamkniecie Windowsa: zapis ustawien i zatrzymanie FFB
+        if (wp) on_close();
+        return 0;
+    case TrayIcon::CALLBACK_MSG:
+        switch (LOWORD(lp)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+            if (in_tray_ || IsIconic(hwnd)) show_window();
+            else hide_to_tray();
+            break;
+        case WM_CONTEXTMENU:
+            show_tray_menu(POINT{GET_X_LPARAM(wp), GET_Y_LPARAM(wp)});
+            break;
+        default:
+            break;
+        }
         return 0;
     case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
     default:
+        if (msg != 0 && msg == winsys::show_message()) {
+            show_window();  // druga kopia panelu prosi o pokazanie okna
+            return 0;
+        }
+        if (msg != 0 && msg == TrayIcon::taskbar_created()) {
+            tray_.readd();  // Eksplorator wystartowal od nowa
+            return 0;
+        }
         break;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
@@ -1068,7 +1411,13 @@ int PanelApp::run() {
     build();
     timeBeginPeriod(1);  // zegar 1 ms zamiast 15,6 - rowne klatki podgladu
 
-    ShowWindow(hwnd_, options_.minimized ? SW_SHOWMINNOACTIVE : (cfg_.ui.zoomed ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL));
+    setup_tray();
+    if (options_.minimized && tray_.added() && cfg_.ui.tray) {
+        in_tray_ = true;  // autostart: od razu w zasobniku, bez przycisku na pasku zadan
+    } else {
+        ever_shown_ = true;
+        ShowWindow(hwnd_, options_.minimized ? SW_SHOWMINNOACTIVE : (cfg_.ui.zoomed ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL));
+    }
     {
         RECT rc;
         GetClientRect(hwnd_, &rc);
@@ -1079,6 +1428,9 @@ int PanelApp::run() {
     UpdateWindow(hwnd_);
     engine_->start();
     set_timer_period(UI_PERIOD_MS);
+    if (options_.after_update) cleanup_after_update();
+    // chwile po starcie - nie spowalnia laczenia z plytka
+    if (cfg_.ui.updates) update_check_at_ = monotonic() + 15.0;
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -1108,13 +1460,22 @@ protocol::StateFrame make_frame(int32_t counts = 0, uint32_t buttons = 0, int ax
 protocol::HelloInfo make_hello() {
     protocol::HelloInfo h;
     h.proto = 1;
-    h.fw_major = 2;
-    h.fw_minor = 2;
-    h.caps = protocol::CAP_FFB | protocol::CAP_G29 | protocol::CAP_G29_HIDE | protocol::CAP_NATIVE_USB;
+    h.fw_major = protocol::FW_LATEST_MAJOR;
+    h.fw_minor = protocol::FW_LATEST_MINOR;
+    h.caps = protocol::CAP_FFB | protocol::CAP_G29 | protocol::CAP_G29_HIDE;
     h.num_buttons = 32;
     h.num_axes = 6;
     h.report_hz = 333;
-    h.name = "Due";
+    h.name = "KIEROWNICA-DUE";
+    return h;
+}
+
+// Uno: aktualny firmware, ale bez natywnego USB - G29 niemozliwe.
+protocol::HelloInfo make_uno_hello() {
+    protocol::HelloInfo h = make_hello();
+    h.caps = protocol::CAP_FFB;
+    h.num_buttons = 7;
+    h.name = "KIEROWNICA-UNO";
     return h;
 }
 
@@ -1187,7 +1548,8 @@ bool PanelApp::selftest_checks(std::string& report) {
         check(vigem && fs::is_regular_file(*vigem / L"ViGEmClient.dll", ec), "wbudowany ViGEmClient.dll rozpakowany");
         auto script = embedded::firmware_script();
         check(script && fs::is_regular_file(*script, ec) && fs::is_regular_file(script->parent_path() / L"kierownica.ino", ec) &&
-                  fs::is_regular_file(script->parent_path() / L"g29_usb.h", ec) && fs::is_regular_file(script->parent_path() / L"wgraj_firmware.ps1", ec),
+                  fs::is_regular_file(script->parent_path() / L"g29_usb.h", ec) && fs::is_regular_file(script->parent_path() / L"wgraj_firmware.ps1", ec) &&
+                  fs::is_regular_file(script->parent_path() / L"piny.h", ec) && fs::is_regular_file(script->parent_path() / L"g29_tinyusb.h", ec),
               "wbudowany firmware rozpakowany");
     }
 
@@ -1402,6 +1764,35 @@ bool PanelApp::selftest_checks(std::string& report) {
     }
     Ui::get().window = {1400, 900};
     go_tab(TAB_DASH);
+    refresh();
+
+    // --- zasobnik: podpowiedz ikony mowi, co sie dzieje ---
+    {
+        Frame f;
+        f.st = engine_->status();
+        f.stats = engine_->link_stats();
+        f.link = engine_->link().state();
+        f.connected = f.link == LinkState::Connected;
+        std::wstring tip = tray_tip(f);
+        check(tip.find(L"Arduino Due") != std::wstring::npos && tip.find(L"COM9") != std::wstring::npos, "podpowiedz zasobnika: plytka i port");
+        check(cfg_.ui.tray, "domyslnie krzyzyk chowa panel do zasobnika");
+    }
+
+    // --- plytka bez natywnego USB (Uno) w trybie G29 ---
+    set_mode("g29");
+    engine_->link().simulate_connected(make_uno_hello(), "COM4");
+    engine_->handle_state_for_test(make_frame(0, 0, 2000, 0));
+    refresh();
+    check(engine_->hello() && engine_->hello()->board() == "Arduino Uno / Nano", "Uno: nazwa plytki z HELLO");
+    check(g29_state(true, engine_->status()) == "no_board", "Uno: G29 niemozliwe, nie 'stary firmware'");
+    check(output_hint(true, engine_->status()).find("nie ma natywnego USB") != std::string::npos, "Uno: podpowiedz kaze wybrac vJoy albo pada");
+    go_tab(TAB_DIAG);
+    refresh();
+    shot("plytka_uno_diagnostyka");
+    go_tab(TAB_DASH);
+    refresh();
+    shot("plytka_uno_pulpit");
+    engine_->link().simulate_connected(make_hello(), "COM9");
     refresh();
 
     // --- bez plytki podglad gasnie ---

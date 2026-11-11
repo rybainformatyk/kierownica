@@ -40,6 +40,7 @@ struct FindData {
     const std::wstring* prefix;
     DWORD own_pid;
     HWND found;
+    bool ours;  // okno wersji C++ - rozumie show_message()
 };
 
 BOOL CALLBACK find_visit(HWND hwnd, LPARAM lparam) {
@@ -55,6 +56,7 @@ BOOL CALLBACK find_visit(HWND hwnd, LPARAM lparam) {
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == data->own_pid) return TRUE;
     data->found = hwnd;
+    data->ours = wcscmp(cls, WINDOW_CLASS) == 0;
     return FALSE;  // mamy - koniec szukania
 }
 
@@ -73,10 +75,27 @@ bool claim_single_instance(const wchar_t* name) {
     return true;
 }
 
+UINT show_message() {
+    static const UINT msg = RegisterWindowMessageW(L"KierownicaPanel.Show");
+    return msg;
+}
+
+std::filesystem::path exe_path() {
+    std::wstring buf(32768, L'\0');
+    DWORD n = GetModuleFileNameW(nullptr, buf.data(), static_cast<DWORD>(buf.size()));
+    buf.resize(n);
+    return std::filesystem::path(buf);
+}
+
 bool bring_to_front(const std::wstring& title_prefix) {
-    FindData data{&title_prefix, GetCurrentProcessId(), nullptr};
+    FindData data{&title_prefix, GetCurrentProcessId(), nullptr, false};
     EnumWindows(find_visit, reinterpret_cast<LPARAM>(&data));
     if (!data.found) return false;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(data.found, &pid);
+    // ten proces uruchomil uzytkownik, wiec moze oddac pierwszy plan
+    AllowSetForegroundWindow(pid);
+    if (data.ours) return PostMessageW(data.found, show_message(), 0, 0) != FALSE;
     ShowWindow(data.found, IsIconic(data.found) ? SW_RESTORE : SW_SHOW);
     SetForegroundWindow(data.found);
     return true;
@@ -99,6 +118,17 @@ std::optional<std::wstring> autostart_target(const std::wstring& command) {
         if (d != std::wstring::npos) return command.substr(c + 1, d - c - 1);
     }
     return first;
+}
+
+bool autostart_points_here() {
+    auto command = autostart_get();
+    auto target = command ? autostart_target(*command) : std::nullopt;
+    if (!target) return false;
+    return CompareStringOrdinal(target->c_str(), -1, exe_path().c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
+bool autostart_enable(bool on) {
+    return autostart_set(on ? std::optional<std::wstring>(autostart_command(exe_path())) : std::nullopt);
 }
 
 std::optional<std::wstring> autostart_get(const wchar_t* key, const wchar_t* value) {
