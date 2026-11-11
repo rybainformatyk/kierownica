@@ -2,11 +2,12 @@
 
 ## 2026-11-11 — Zrzuty ekranu panelu w README na GitHubie
 
-**Co zrobione:** README w repozytorium pokazuje panel: duży zrzut Pulpitu pod opisem projektu i sekcję „Zrzuty ekranu” z zakładkami Kierownica, Pedały, G29, Pad i Force Feedback.
+**Co zrobione:** README w repozytorium pokazuje panel. Pod opisem projektu jest duży zrzut Pulpitu (ekranu głównego). Sekcja „Zrzuty ekranu” zawiera cały Pulpit, rozwinięte menu trybu wyjścia oraz zakładki Kierownica, Pedały, G29, Pad i Force Feedback.
 
 **Jak to działa:**
-- Obrazy leżą w `docs/zrzuty/` (`pulpit.png`, `kierownica.png`, `pedaly.png`, `g29.png`, `pad.png`, `ffb.png`, razem ok. 1,7 MB, 1400×900).
+- Obrazy leżą w `docs/zrzuty/`: `pulpit.png` (1400×1104, cały ekran główny), `menu.png` (menu trybu wyjścia), `kierownica.png`, `pedaly.png`, `g29.png`, `pad.png`, `ffb.png`. Pozostałe mają 1400×900, razem ok. 2,1 MB.
 - Generuje je `panel/cpp/tools/make_screenshots.py`. Skrypt uruchamia `Kierownica.exe --selftest <katalog tymczasowy>`: program nie otwiera okna, udaje podłączone Arduino Due z firmware 3.0 i rysuje każdą zakładkę do PNG. Potem skrypt kopiuje wybrane pliki pod stałymi nazwami (mapa `SHOTS`) i zapisuje je jako zoptymalizowane PNG bez strat (Pillow).
+- Pulpit pochodzi z renderu `cala_1400_Pulpit.png`, który ma pełną wysokość strony (2300 px). Funkcja `crop_to_content()` obcina go do ostatniego wiersza treści plus 24 px marginesu. Zwykły zrzut 1400×900 ucinał kafelki „Wyjście do gier” i „Stan systemu”.
 
 **Dlaczego tak:** zrzuty z selftestu są powtarzalne i nie zawierają danych z komputera użytkownika (ścieżek, nazw urządzeń). Można je odświeżyć jednym poleceniem po każdej zmianie wyglądu. Zdjęć samej kierownicy (sprzętu) w projekcie nie ma, więc README pokazuje tylko aplikację. Diagnostyka nie trafiła do galerii, bo w symulacji pokazuje zera (0 Hz, 0 ramek).
 
