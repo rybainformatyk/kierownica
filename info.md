@@ -20,7 +20,8 @@ Wpisana w zakładce Kierownica liczba „Impulsy na obrót kierownicy” zawsze 
 ### Uwagi i pułapki
 
 - `Entry` jest używane tylko w tym miejscu. Nowe pola tekstowe dostają zatwierdzanie przez trzeci argument konstruktora.
-- Poprawka nie jest jeszcze w wydaniu (v3.2 ma błąd). Do wydania: podbić `src/version.h` (np. 3.2.1), `wydanie.bat`, `opublikuj.bat` — panele 3.2 zaktualizują się same.
+- Wydane jako [v3.2.1](https://github.com/rybainformatyk/kierownica/releases/tag/v3.2.1) — panele 3.2 zaktualizują się same.
+- Przy okazji: `APP_VERSION_TEXT` (`src/version.h`) ma numer poprawki, gdy jest różny od 0 („3.2.1”). Wcześniej byłoby to „3.2”, więc 3.2.1 widziałaby wydanie 3.2.1 jako nowsze i aktualizowała się w kółko. Pilnuje tego test w `core_tests` (`APP_VERSION_TEXT` == `APP_VERSION_FULL`).
 
 
 ## 2026-11-11 — Publikacja wersji 3.2 na GitHubie
