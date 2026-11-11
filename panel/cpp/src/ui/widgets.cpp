@@ -1172,6 +1172,11 @@ bool Entry::key_down(unsigned vk) {
         break;
     case VK_RETURN:
     case VK_TAB:
+        Ui::get().set_focus(nullptr);  // zatwierdza w focus_changed
+        break;
+    case VK_ESCAPE:
+        text_ = before_edit_;
+        caret_ = text_.size();
         Ui::get().set_focus(nullptr);
         break;
     default:
@@ -1179,6 +1184,16 @@ bool Entry::key_down(unsigned vk) {
     }
     invalidate();
     return true;
+}
+
+void Entry::focus_changed(bool focused) {
+    if (focused) {
+        before_edit_ = text_;
+    } else if (on_commit_ && text_ != before_edit_) {
+        before_edit_ = text_;
+        on_commit_(text_);
+    }
+    invalidate();
 }
 
 void Entry::char_input(wchar_t c) {

@@ -516,9 +516,14 @@ private:
     Anim hover_anim_;
 };
 
+// Pole tekstowe. Wpis zatwierdza Enter, Tab albo utrata fokusu (klik obok,
+// np. w przycisk "Zapisz") - jak w Slider; Esc wraca do tekstu sprzed edycji.
+// Bez zatwierdzenia strona przy odswiezaniu nadpisalaby wpis wartoscia z configu.
 class Entry : public Widget {
 public:
-    Entry(std::string text, int width_chars) : text_(std::move(text)), width_chars_(width_chars) {}
+    using CommitFn = std::function<void(const std::string&)>;
+    Entry(std::string text, int width_chars, CommitFn on_commit = nullptr)
+        : text_(std::move(text)), width_chars_(width_chars), on_commit_(std::move(on_commit)) {}
 
     const std::string& text() const { return text_; }
     void set(const std::string& text);
@@ -527,12 +532,14 @@ public:
     void mouse_down(float x, float y) override;
     bool key_down(unsigned vk) override;
     void char_input(wchar_t c) override;
-    void focus_changed(bool) override { invalidate(); }
+    void focus_changed(bool focused) override;
 
 private:
     std::string text_;
+    std::string before_edit_;  // tekst w chwili dostania fokusu
     int width_chars_;
     size_t caret_ = 0;
+    CommitFn on_commit_;
 };
 
 class Stepper : public Widget {

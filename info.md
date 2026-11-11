@@ -1,5 +1,29 @@
 # Kierownica DIY - notatki z prac
 
+## 2026-11-11 — Naprawa: nie dało się zmienić impulsów enkodera
+
+### Co zrobione
+
+Wpisana w zakładce Kierownica liczba „Impulsy na obrót kierownicy” zawsze wracała do starej wartości. Teraz zatwierdza ją Enter, Tab, kliknięcie obok albo „Zapisz”, a Esc cofa wpis.
+
+### Jak to działa
+
+- Przyczyna: `WheelPage::refresh()` co klatkę wpisuje do pola wartość z configu, gdy pole nie ma fokusu. Enter tylko zdejmował fokus i nic nie zatwierdzał. „Zapisz” przegrywał wyścig: `WM_LBUTTONDOWN` zdejmuje fokus, odświeżenie (~16 ms) przywraca starą liczbę, a przycisk działa dopiero na puszczeniu myszy i zapisywał tę starą liczbę.
+- Naprawa w `ui/widgets.*`: `Entry` dostał callback `on_commit`, wołany w `focus_changed(false)`, gdy tekst różni się od tego sprzed edycji (ten sam wzorzec co `Slider::focus_changed`). Enter i Tab zdejmują fokus, więc zatwierdzają. Esc przywraca `before_edit_`.
+- `WheelPage::apply_cpr(text)` (`ui/page_setup.cpp`): przy błędnym wpisie pokazuje komunikat w oknie i cofa pole, bez okna modalnego, bo utrata fokusu dzieje się w trakcie kliknięcia myszą i MessageBox popsułby przechwycenie myszy. Ta sama wartość co w configu = nic nie robi (klik „Zapisz” po automatycznym zatwierdzeniu).
+- Dalsza ścieżka była poprawna: `apply_config()` → `publish_config()` → `SteerProcessor::process()` czyta `counts_per_rev` w każdej ramce, a `push_board_config()` wysyła płytce nowy próg miękkiego ogranicznika.
+
+### Jak przetestować
+
+`bin\Kierownica.exe --selftest katalog` — sprawdzenia „pole: …” i „impulsy enkodera: …” w `selftest.log`.
+
+### Uwagi i pułapki
+
+- `Entry` jest używane tylko w tym miejscu. Nowe pola tekstowe dostają zatwierdzanie przez trzeci argument konstruktora.
+- Wydane jako [v3.2.1](https://github.com/rybainformatyk/kierownica/releases/tag/v3.2.1) — panele 3.2 zaktualizują się same.
+- Przy okazji: `APP_VERSION_TEXT` (`src/version.h`) ma numer poprawki, gdy jest różny od 0 („3.2.1”). Wcześniej byłoby to „3.2”, więc 3.2.1 widziałaby wydanie 3.2.1 jako nowsze i aktualizowała się w kółko. Pilnuje tego test w `core_tests` (`APP_VERSION_TEXT` == `APP_VERSION_FULL`).
+
+
 ## 2026-11-11 — Publikacja wersji 3.2 na GitHubie
 
 ### Co zrobione

@@ -20,6 +20,7 @@
 #include "processing.h"
 #include "protocol.h"
 #include "updater.h"
+#include "version.h"
 #include "winsys.h"
 
 using namespace wb;
@@ -656,6 +657,9 @@ static void test_updater() {
     CHECK(compare_versions("3.2", "3.2.1") < 0);
     CHECK(compare_versions("3.2.0", "3.2") == 0);
     CHECK(compare_versions("4.0-beta", "3.9") > 0);
+    // wersja programu = pelny numer z VERSIONINFO (i z tagu wydania) - inaczej
+    // np. 3.2.1 przedstawialaby sie jako 3.2 i aktualizowala w kolko
+    CHECK(compare_versions(APP_VERSION_TEXT, APP_VERSION_FULL) == 0);
 
     const char* api = R"({"tag_name": "v3.3", "name": "Kierownica 3.3", "html_url": "https://github.com/rybainformatyk/kierownica/releases/tag/v3.3",
         "body": "## Nowe\r\n* zasobnik", "assets": [

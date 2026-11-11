@@ -57,9 +57,10 @@ std::unique_ptr<Widget> WheelPage::build() {
 
     auto c2 = mk<Card>("Enkoder");
     auto row = mk<Box>(true);
-    cpr_ = row->add(mk<Entry>(std::to_string(cfg.steer.counts_per_rev), 10), Pack{.cross = Pack::Center});
-    row->add(mk<Button>("Zapisz", Button::Small, [this] { apply_cpr(); }), Pack{.left = 8, .cross = Pack::Center});
-    add_row(c2->body, "Impulsy na obrót kierownicy", "Liczone x4, jak podaje enkoder.", std::move(row));
+    // Enter albo klik obok zatwierdza wpis (Entry), "Zapisz" robi to samo jawnie
+    cpr_ = row->add(mk<Entry>(std::to_string(cfg.steer.counts_per_rev), 10, [this](const std::string& t) { apply_cpr(t); }), Pack{.cross = Pack::Center});
+    row->add(mk<Button>("Zapisz", Button::Small, [this] { apply_cpr(cpr_->text()); }), Pack{.left = 8, .cross = Pack::Center});
+    add_row(c2->body, "Impulsy na obrót kierownicy", "Liczone x4, jak podaje enkoder. Wpisz liczbę i naciśnij Enter.", std::move(row));
     add_row(c2->body, "Wykrywanie automatyczne", "Ustaw środek, przekręć kierownicę do jednego oporu, potem do drugiego i kliknij przycisk. Aplikacja policzy impulsy z przejechanego zakresu.",
             mk<Button>("Wykryj", Button::Normal, [this] { detect_cpr(); }));
     captured_ = c2->body->add(mk<Label>("", Font::Small, TEXT_DIM), Pack{.top = 2, .cross = Pack::Start});
@@ -104,18 +105,23 @@ std::unique_ptr<Widget> WheelPage::build() {
     return page;
 }
 
-void WheelPage::apply_cpr() {
-    json::Value text(cpr_->text());
+// Wolane z pola (Enter / utrata fokusu) i z przycisku "Zapisz". Bez okien
+// modalnych - utrata fokusu zdarza sie w srodku klikniecia mysza.
+void WheelPage::apply_cpr(const std::string& entered) {
+    AppConfig& cfg = app_.cfg();
+    json::Value text(entered);
     int64_t value = text.to_int(INT64_MIN);
-    if (value == INT64_MIN) {
-        app_.inform("Impulsy enkodera", "Podaj liczbę całkowitą.", MB_ICONWARNING);
+    if (value == INT64_MIN || value < 4) {
+        Ui::get().toast(value == INT64_MIN ? "Impulsy na obrót: podaj liczbę całkowitą" : "Impulsy na obrót: co najmniej 4", WARN, ic::warn);
+        cpr_->set(std::to_string(cfg.steer.counts_per_rev));
         return;
     }
-    if (value < 4) {
-        app_.inform("Impulsy enkodera", "Wartość musi być co najmniej 4.", MB_ICONWARNING);
+    int cpr = static_cast<int>(std::min<int64_t>(value, 2'000'000));
+    if (cpr == cfg.steer.counts_per_rev) {
+        cpr_->set(std::to_string(cpr));  // np. "02400" -> "2400"
         return;
     }
-    app_.cfg().steer.counts_per_rev = static_cast<int>(std::min<int64_t>(value, 2'000'000));
+    cfg.steer.counts_per_rev = cpr;
     app_.engine().apply_config();
     cpr_->set(std::to_string(app_.cfg().steer.counts_per_rev));
     app_.log("ok", std::format("Impulsy na obrót: {}", app_.cfg().steer.counts_per_rev));
