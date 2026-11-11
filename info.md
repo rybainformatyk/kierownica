@@ -1,5 +1,27 @@
 # Kierownica DIY - notatki z prac
 
+## 2026-11-11 — Zrzuty ekranu panelu w README na GitHubie
+
+**Co zrobione:** README w repozytorium pokazuje panel: duży zrzut Pulpitu pod opisem projektu i sekcję „Zrzuty ekranu” z zakładkami Kierownica, Pedały, G29, Pad i Force Feedback.
+
+**Jak to działa:**
+- Obrazy leżą w `docs/zrzuty/` (`pulpit.png`, `kierownica.png`, `pedaly.png`, `g29.png`, `pad.png`, `ffb.png`, razem ok. 1,7 MB, 1400×900).
+- Generuje je `panel/cpp/tools/make_screenshots.py`. Skrypt uruchamia `Kierownica.exe --selftest <katalog tymczasowy>`: program nie otwiera okna, udaje podłączone Arduino Due z firmware 3.0 i rysuje każdą zakładkę do PNG. Potem skrypt kopiuje wybrane pliki pod stałymi nazwami (mapa `SHOTS`) i zapisuje je jako zoptymalizowane PNG bez strat (Pillow).
+
+**Dlaczego tak:** zrzuty z selftestu są powtarzalne i nie zawierają danych z komputera użytkownika (ścieżek, nazw urządzeń). Można je odświeżyć jednym poleceniem po każdej zmianie wyglądu. Zdjęć samej kierownicy (sprzętu) w projekcie nie ma, więc README pokazuje tylko aplikację. Diagnostyka nie trafiła do galerii, bo w symulacji pokazuje zera (0 Hz, 0 ramek).
+
+**Jak uruchomić / odświeżyć:**
+```
+panel\cpp\build.bat
+py -3 panel\cpp\tools\make_screenshots.py                 # domyślnie bin\Kierownica.exe
+py -3 panel\cpp\tools\make_screenshots.py --exe panel\cpp\dist\Kierownica.exe
+```
+
+**Uwagi i pułapki:**
+- Symulowana płytka ma 0 Hz, więc na górnym pasku widać „COM9 · 0 Hz”.
+- Nazwy plików selftestu zawierają polskie znaki i spacje („tab_2_Pedały.png”). Zmiana nazw zakładek w kodzie wymaga poprawienia mapy `SHOTS`.
+- Zdjęcia sprzętu można dodać później do `docs/zrzuty/` i podlinkować w README tak samo.
+
 ## 2026-11-11 — Naprawa: nie dało się zmienić impulsów enkodera
 
 ### Co zrobione
